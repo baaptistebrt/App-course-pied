@@ -1,0 +1,25 @@
+[theme]
+base = "light"
+primaryColor = "#1B4F8C"
+backgroundColor = "#E9EEF4"
+secondaryBackgroundColor = "#F4F7FB"
+textColor = "#14233A"
+borderColor = "#D3DCE6"
+dataframeHeaderBackgroundColor = "#EEF3F8"
+font = "Barlow:https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&display=swap"
+headingFont = "Barlow Condensed:https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&display=swap"
+baseRadius = "0.5rem"
+
+[theme.sidebar]
+backgroundColor = "#0F2A4A"
+secondaryBackgroundColor = "#173A61"
+textColor = "#E6EDF5"
+
+[server]
+maxUploadSize = 10
+
+[client]
+toolbarMode = "viewer"
+
+[browser]
+gatherUsageStats = false
