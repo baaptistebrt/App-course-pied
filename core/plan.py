@@ -1,0 +1,351 @@
+"""
+Modèle d'un plan d'entraînement (semaines + séances) et opérations de structure.
+
+Un `Plan` ne stocke que ce que saisit le coach. Allures, dates et temps spécifiques sont
+recalculés à l'affichage (objectif, ratios et date de course de l'élève).
+Toutes les opérations renvoient un NOUVEAU Plan (aucune mutation en place).
+"""
+
+from __future__ import annotations
+
+import math
+import re
+import uuid
+from dataclasses import dataclass
+from datetime import date, timedelta
+
+import pandas as pd
+
+from .calculs import Pace, format_hms, format_minutes, format_pace, parse_duration_minutes, parse_km_range
+from .config import (FREQ_ALWAYS, FREQ_ONLY_4, PACE_CODES, PACE_LABELS, RACE_DAY_LABEL, SESSION_COLUMNS,
+                     SESSION_INPUT_COLUMNS, SESSION_TEXT_COLUMNS, SKELETON_WEEK, WEEK_COLUMNS)
+
+
+# ----------------------------------------------------------------------------
+# Normalisation des valeurs saisies
+# ----------------------------------------------------------------------------
+def is_missing(value) -> bool:
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def clean_text(value) -> str:
+    if is_missing(value):
+        return ""
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value).strip()
+
+
+def clean_number(value) -> float:
+    if is_missing(value) or (isinstance(value, str) and not value.strip()):
+        return math.nan
+    try:
+        return float(str(value).replace(",", "."))
+    except ValueError:
+        return math.nan
+
+
+def clean_pace_code(value) -> str | None:
+    if is_missing(value):
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    for code in PACE_CODES:
+        if raw.lower() in (code.lower(), PACE_LABELS[code].lower()):
+            return code
+    if (m := re.match(r"^\s*(?:a|allure\s*)([1-4])\b", raw, re.IGNORECASE)):
+        return f"A{m.group(1)}"
+    if raw.lower().startswith("end"):
+        return "Endurance"
+    if raw.lower().startswith("sprint"):
+        return "Sprint"
+    return None
+
+
+def clean_frequency(value) -> str:
+    raw = clean_text(value).lower()
+    return FREQ_ONLY_4 if raw in ("4", "4.0", "si 4 séances", "4 seulement") else FREQ_ALWAYS
+
+
+def clean_sessions(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise un tableau de séances. Idempotente. Numérote « sN » les séances sans libellé."""
+    src = df.reset_index(drop=True)
+    out = pd.DataFrame(index=range(len(src)))
+    for col in SESSION_INPUT_COLUMNS:
+        values = list(src[col]) if col in src.columns else [None] * len(src)
+        if col in SESSION_TEXT_COLUMNS:
+            out[col] = pd.Series([clean_text(v) for v in values], dtype=object)
+        elif col == "km_spe":
+            out[col] = pd.Series([clean_number(v) for v in values], dtype="float64")
+        elif col == "allure":
+            out[col] = pd.Series([clean_pace_code(v) for v in values], dtype=object)
+        elif col == "frequence":
+            out[col] = pd.Series([clean_frequency(v) for v in values], dtype=object)
+    numbers = [int(m.group(1)) for v in out["seance"] if (m := re.fullmatch(r"[sS](\d+)", v))]
+    next_n = max(numbers, default=0) + 1
+    for i in out.index:
+        if not out.at[i, "seance"]:
+            out.at[i, "seance"] = f"s{next_n}"
+            next_n += 1
+    return out
+
+
+def sessions_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
+    ca, cb = clean_sessions(a), clean_sessions(b)
+    if len(ca) != len(cb):
+        return False
+    rec = lambda d: [tuple(None if is_missing(v) else v for v in row)  # noqa: E731
+                     for row in d[SESSION_INPUT_COLUMNS].itertuples(index=False)]
+    return rec(ca) == rec(cb)
+
+
+def _new_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
+def is_race_day(seance) -> bool:
+    return clean_text(seance).upper().replace(" ", "") == RACE_DAY_LABEL.replace(" ", "")
+
+
+def is_empty_session(row) -> bool:
+    """Séance sans aucun contenu (ni km, ni durée, ni contenu, ni allure)."""
+    return not any([clean_text(row.get("km_env")), clean_text(row.get("duree_env")),
+                    clean_text(row.get("contenu")), clean_pace_code(row.get("allure")),
+                    not is_missing(row.get("km_spe"))])
+
+
+# ----------------------------------------------------------------------------
+# Plan
+# ----------------------------------------------------------------------------
+@dataclass
+class Plan:
+    weeks: pd.DataFrame
+    sessions: pd.DataFrame
+
+    @classmethod
+    def empty(cls) -> "Plan":
+        return cls(pd.DataFrame(columns=WEEK_COLUMNS), pd.DataFrame(columns=SESSION_COLUMNS))
+
+    @classmethod
+    def from_week_list(cls, weeks: list[dict]) -> "Plan":
+        """[{phase, sessions: [...]}, …] (ordre chronologique) -> Plan."""
+        week_rows, frames = [], []
+        for pos, w in enumerate(weeks):
+            wid = _new_id()
+            week_rows.append({"week_id": wid, "position": pos, "phase": w.get("phase", "")})
+            sess = clean_sessions(pd.DataFrame(w.get("sessions", []), columns=SESSION_INPUT_COLUMNS))
+            sess.insert(0, "week_id", wid)
+            sess.insert(1, "ordre", range(len(sess)))
+            frames.append(sess)
+        sessions = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SESSION_COLUMNS)
+        return cls(pd.DataFrame(week_rows, columns=WEEK_COLUMNS), sessions).normalized()
+
+    def copy_with_new_ids(self) -> "Plan":
+        """Copie indépendante (nouveaux identifiants de semaines), ex. modèle -> plan d'élève."""
+        mapping = {wid: _new_id() for wid in self.weeks["week_id"]}
+        weeks = self.weeks.copy()
+        weeks["week_id"] = weeks["week_id"].map(mapping)
+        sessions = self.sessions.copy()
+        sessions["week_id"] = sessions["week_id"].map(mapping)
+        return Plan(weeks, sessions).normalized()
+
+    def normalized(self) -> "Plan":
+        weeks = self.weeks.copy() if len(self.weeks.columns) else pd.DataFrame(columns=WEEK_COLUMNS)
+        for col in WEEK_COLUMNS:
+            if col not in weeks.columns:
+                weeks[col] = None
+        weeks["phase"] = [clean_text(v) for v in weeks["phase"]]
+        weeks["week_id"] = weeks["week_id"].astype(str)
+        weeks["position"] = pd.to_numeric(weeks["position"], errors="coerce").fillna(0)
+        weeks = weeks.sort_values("position", kind="stable").reset_index(drop=True)
+        weeks["position"] = range(len(weeks))
+        weeks = weeks[WEEK_COLUMNS]
+
+        sessions = self.sessions.copy()
+        if len(sessions):
+            sessions["week_id"] = sessions["week_id"].astype(str)
+        frames = []
+        for wid in weeks["week_id"]:
+            sub = sessions[sessions["week_id"] == wid] if len(sessions) else sessions
+            if "ordre" in sub.columns and len(sub):
+                sub = sub.assign(_o=pd.to_numeric(sub["ordre"], errors="coerce")).sort_values("_o", kind="stable")
+            sub = clean_sessions(sub)
+            sub.insert(0, "week_id", wid)
+            sub.insert(1, "ordre", range(len(sub)))
+            frames.append(sub)
+        sessions = pd.concat(frames, ignore_index=True) if frames else clean_sessions(pd.DataFrame())
+        if "week_id" not in sessions.columns:
+            sessions.insert(0, "week_id", pd.Series(dtype=object))
+            sessions.insert(1, "ordre", pd.Series(dtype=int))
+        sessions["km_spe"] = sessions["km_spe"].astype("float64")
+        return Plan(weeks, sessions[SESSION_COLUMNS].reset_index(drop=True))
+
+    # ---- lecture -------------------------------------------------------------
+    @property
+    def n_weeks(self) -> int:
+        return len(self.weeks)
+
+    @staticmethod
+    def week_label(position: int) -> str:
+        """S1, S2… (la dernière semaine est celle de la course)."""
+        return f"S{position + 1}"
+
+    def week_start(self, position: int, race_date: date | None) -> date | None:
+        """Lundi de la semaine : lundi de la semaine de course − 7 j par semaine d'écart."""
+        if race_date is None:
+            return None
+        race_monday = race_date - timedelta(days=race_date.weekday())
+        return race_monday - timedelta(weeks=self.n_weeks - 1 - position)
+
+    def week_position(self, week_id: str) -> int:
+        return int(self.weeks.loc[self.weeks["week_id"] == week_id, "position"].iloc[0])
+
+    def sessions_of(self, week_id: str) -> pd.DataFrame:
+        sub = self.sessions[self.sessions["week_id"] == week_id].sort_values("ordre")
+        return sub[SESSION_INPUT_COLUMNS].reset_index(drop=True)
+
+    # ---- modifications ---------------------------------------------------------
+    def replace_week_sessions(self, week_id: str, new_sessions: pd.DataFrame) -> "Plan":
+        sub = clean_sessions(new_sessions)
+        sub.insert(0, "week_id", week_id)
+        sub.insert(1, "ordre", range(len(sub)))
+        others = self.sessions[self.sessions["week_id"] != week_id]
+        frames = [f for f in (others, sub) if len(f)]
+        sessions = pd.concat(frames, ignore_index=True) if frames else sub
+        return Plan(self.weeks.copy(), sessions).normalized()
+
+    def set_phase(self, week_id: str, phase: str) -> "Plan":
+        weeks = self.weeks.copy()
+        weeks.loc[weeks["week_id"] == week_id, "phase"] = clean_text(phase)
+        return Plan(weeks, self.sessions.copy()).normalized()
+
+    def insert_week(self, position: int, sessions=None, phase: str = "") -> "Plan":
+        """Insère une semaine (squelette de 3 séances par défaut) à `position`."""
+        position = max(0, min(position, self.n_weeks))
+        wid = _new_id()
+        weeks = self.weeks.copy()
+        weeks.loc[weeks["position"] >= position, "position"] += 1
+        weeks = pd.concat([weeks, pd.DataFrame([{"week_id": wid, "position": position, "phase": phase}])],
+                          ignore_index=True)
+        sub = clean_sessions(sessions if isinstance(sessions, pd.DataFrame)
+                             else pd.DataFrame(sessions if sessions is not None else SKELETON_WEEK))
+        sub.insert(0, "week_id", wid)
+        sub.insert(1, "ordre", range(len(sub)))
+        frames = [f for f in (self.sessions, sub) if len(f)]
+        return Plan(weeks, pd.concat(frames, ignore_index=True) if frames else sub).normalized()
+
+    def duplicate_week(self, week_id: str) -> "Plan":
+        """Copie de la semaine insérée juste avant elle."""
+        pos = self.week_position(week_id)
+        phase = self.weeks.loc[self.weeks["week_id"] == week_id, "phase"].iloc[0]
+        return self.insert_week(pos, self.sessions_of(week_id), phase)
+
+    def delete_week(self, week_id: str) -> "Plan":
+        if self.n_weeks <= 1:
+            raise ValueError("Le plan doit contenir au moins une semaine.")
+        return Plan(self.weeks[self.weeks["week_id"] != week_id].copy(),
+                    self.sessions[self.sessions["week_id"] != week_id].copy()).normalized()
+
+    def resize(self, n_weeks: int) -> "Plan":
+        """Ajuste la durée en gardant la fin du plan (affûtage + course) : ajoute/retire au début."""
+        if n_weeks < 1:
+            raise ValueError("Le plan doit contenir au moins une semaine.")
+        plan = self
+        while plan.n_weeks < n_weeks:
+            plan = plan.insert_week(0)
+        while plan.n_weeks > n_weeks:
+            plan = plan.delete_week(plan.weeks.sort_values("position")["week_id"].iloc[0])
+        return plan
+
+
+# ----------------------------------------------------------------------------
+# Tableaux calculés
+# ----------------------------------------------------------------------------
+def computed_columns(sessions: pd.DataFrame, paces: dict[str, Pace], objective_seconds: int) -> pd.DataFrame:
+    """Ajoute allure, vitesse et temps spécifique ; durée du JOUR J = objectif (E11 = D4)."""
+    out = sessions.copy().reset_index(drop=True)
+    pace_objs = [paces.get(code) if code else None for code in out["allure"]]
+    out["allure_txt"] = [format_pace(p.min_per_km) if p else "" for p in pace_objs]
+    out["allure_dec"] = [round(p.min_per_km, 2) if p else math.nan for p in pace_objs]
+    out["vitesse"] = [round(p.kmh, 1) if p else math.nan for p in pace_objs]
+    temps = [km * p.min_per_km if (p is not None and not is_missing(km)) else math.nan
+             for p, km in zip(pace_objs, out["km_spe"])]
+    out["temps_spe_min"] = temps
+    out["temps_spe"] = [format_minutes(t) if not is_missing(t) else "" for t in temps]
+    out["duree_env"] = [format_hms(objective_seconds) if is_race_day(s) and not clean_text(d) else d
+                        for s, d in zip(out["seance"], out["duree_env"])]
+    return out
+
+
+def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
+                    race_date: date | None = None, frequency: int | None = None,
+                    hide_empty: bool = False) -> pd.DataFrame:
+    """Plan complet (ordre chronologique) avec colonnes calculées.
+
+    frequency=3 retire les séances marquées « 4 » ; hide_empty retire les séances vides.
+    """
+    frames = []
+    for _, w in plan.weeks.sort_values("position").iterrows():
+        pos = int(w["position"])
+        sub = plan.sessions_of(w["week_id"])
+        if frequency == 3:
+            sub = sub[sub["frequence"] != FREQ_ONLY_4]
+        if hide_empty:
+            sub = sub[[not is_empty_session(r) for _, r in sub.iterrows()]]
+        sub = computed_columns(sub, paces, objective_seconds)
+        start = plan.week_start(pos, race_date)
+        sub.insert(0, "week_id", w["week_id"])
+        sub.insert(1, "position", pos)
+        sub.insert(2, "semaine", Plan.week_label(pos))
+        sub.insert(3, "debut", start)
+        sub.insert(4, "fin", start + timedelta(days=6) if start else None)
+        sub.insert(5, "phase", w["phase"])
+        frames.append(sub)
+    frames = [f for f in frames if len(f)]
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+@dataclass(frozen=True)
+class WeekSummary:
+    km_min: float
+    km_max: float
+    minutes: float
+    n_sessions: int
+
+    @property
+    def km_str(self) -> str:
+        if self.km_max <= 0:
+            return ""
+        fmt = lambda x: f"{x:.1f}".rstrip("0").rstrip(".").replace(".", ",")  # noqa: E731
+        if abs(self.km_max - self.km_min) < 0.05:
+            return f"{fmt(self.km_min)} km"
+        return f"{fmt(self.km_min)} à {fmt(self.km_max)} km"
+
+    @property
+    def duration_str(self) -> str:
+        return format_minutes(self.minutes) if self.minutes > 0 else ""
+
+
+def week_summary(computed: pd.DataFrame) -> WeekSummary:
+    km_min = km_max = minutes = 0.0
+    for km, dur in zip(computed.get("km_env", []), computed.get("duree_env", [])):
+        if (rng := parse_km_range(km)):
+            km_min += rng[0]
+            km_max += rng[1]
+        if (m := parse_duration_minutes(dur)):
+            minutes += m
+    return WeekSummary(km_min, km_max, minutes, len(computed))
+
+
+def weeks_until(race_date: date, today: date | None = None) -> int:
+    """Nombre de semaines de plan possibles d'ici la course (semaine en cours et semaine de course incluses)."""
+    today = today or date.today()
+    race_monday = race_date - timedelta(days=race_date.weekday())
+    this_monday = today - timedelta(days=today.weekday())
+    return (race_monday - this_monday).days // 7 + 1

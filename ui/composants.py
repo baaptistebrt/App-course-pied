@@ -1,0 +1,210 @@
+"""
+Composants partagés entre l'interface éditeur et l'interface élève :
+notifications, éditeur de plan (semaines / séances), éditeur de formules, exports et impression.
+"""
+
+from __future__ import annotations
+
+from datetime import date, timedelta
+from typing import Callable
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+from core import referentiel
+from core.calculs import Pace, compute_paces, ratio_formula
+from core.config import (FREQ_ALWAYS, FREQ_LABELS, PACE_BY_CODE, PACE_CODES, PACE_LABELS,
+                         RATIO_CODES, SESSION_INPUT_COLUMNS)
+from core.exports import export_csv, export_excel, fr_date, print_button_html, print_document, print_page
+from core.plan import Plan, computed_columns, sessions_equal
+from core.stockage import Store, get_store
+
+
+# =========================================================================== stockage
+@st.cache_resource(show_spinner="Chargement des données…")
+def app_store() -> Store:
+    """Stockage partagé par toutes les sessions (rechargé depuis GitHub au démarrage si configuré)."""
+    store = get_store()
+    referentiel.ensure_referentiel(store)
+    return store
+
+
+# =========================================================================== notifications
+def notify(message: str, kind: str = "success") -> None:
+    st.session_state.setdefault("_notes", []).append((kind, message))
+
+
+def saved(message: str) -> None:
+    """À appeler après un enregistrement : confirme, et signale un échec de copie GitHub."""
+    store = app_store()
+    if store.mirror and store.mirror.last_error:
+        notify(f"Enregistré sur le serveur, mais la copie GitHub a échoué : {store.mirror.last_error}", "warning")
+    else:
+        notify(message)
+
+
+def show_notifications() -> None:
+    for kind, message in st.session_state.pop("_notes", []):
+        if kind == "error":
+            st.error(message, icon="⚠️")
+        elif kind == "warning":
+            st.warning(message, icon="☁️")
+        else:
+            st.toast(message, icon="✅")
+
+
+def version(key: str) -> int:
+    return st.session_state.setdefault(f"_v_{key}", 0)
+
+
+def bump(key: str) -> None:
+    """Change la clé des widgets concernés pour qu'ils se recréent avec les données enregistrées."""
+    st.session_state[f"_v_{key}"] = version(key) + 1
+
+
+# =========================================================================== éditeur de plan
+COMPUTED = ["allure_txt", "vitesse", "temps_spe"]
+EDITOR_ORDER = ["seance", "km_env", "duree_env", "contenu", "km_spe", "allure", "frequence", *COMPUTED, "remarque"]
+
+
+def column_config() -> dict:
+    cc = st.column_config
+    return {
+        "seance": cc.TextColumn("Séance", width=75, help="s1, s2… ou « JOUR J » (durée = objectif)"),
+        "km_env": cc.TextColumn("Km", width=70, help="Nombre ou fourchette : 12, 25 à 30"),
+        "duree_env": cc.TextColumn("Durée", width=70, help="h:mm, ex. 1:10"),
+        "contenu": cc.TextColumn("Contenu", width=250, help='Ex. : 2x2000 A1 r=1000, 8x30"/30"'),
+        "km_spe": cc.NumberColumn("Km spé.", width=70, min_value=0.0, max_value=60.0, step=0.1, format="%.1f",
+                                  help="Km courus à l'allure choisie : donne le temps spécifique"),
+        "allure": cc.SelectboxColumn("Allure", width=120, options=PACE_CODES,
+                                     format_func=lambda c: PACE_LABELS.get(c, c),
+                                     help="L'allure se calcule selon l'objectif et les formules de l'élève"),
+        "frequence": cc.SelectboxColumn("Fréquence", width=105, options=list(FREQ_LABELS), required=True,
+                                        default=FREQ_ALWAYS, format_func=lambda f: FREQ_LABELS.get(f, f),
+                                        help="« Si 4 séances » : séance retirée quand l'élève s'entraîne 3 fois"),
+        "allure_txt": cc.TextColumn("/km", width=62, disabled=True),
+        "vitesse": cc.NumberColumn("km/h", width=58, format="%.1f", disabled=True),
+        "temps_spe": cc.TextColumn("Temps spé.", width=78, disabled=True),
+        "remarque": cc.TextColumn("Remarque", width=200),
+    }
+
+
+def editor_frame(sessions: pd.DataFrame, paces: dict[str, Pace], seconds: int) -> pd.DataFrame:
+    comp = computed_columns(sessions, paces, seconds)
+    view = sessions.copy()
+    for col in COMPUTED:
+        view[col] = comp[col]
+    for col in ("seance", "km_env", "duree_env", "contenu", "remarque", "allure_txt", "temps_spe", "allure",
+                "frequence"):
+        view[col] = view[col].astype(object)
+    view["km_spe"] = view["km_spe"].astype("float64")
+    view["vitesse"] = view["vitesse"].astype("float64")
+    return view[EDITOR_ORDER]
+
+
+def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: date | None, key: str,
+                load: Callable[[], Plan], save: Callable[[Plan, str], None]) -> None:
+    """Édition complète d'un plan. `load` relit le plan enregistré, `save(plan, message)` l'enregistre."""
+    ver = version(key)
+
+    def apply(op: Callable[[Plan], Plan], message: str) -> None:
+        try:
+            save(op(load()), message)
+        except ValueError as exc:
+            notify(str(exc), "error")
+        bump(key)
+
+    with st.container(border=True, key=f"card-struct-{key}"):
+        c_n, c_apply, c_add = st.columns([1, 1.3, 2.6], vertical_alignment="bottom")
+        target = int(c_n.number_input("Durée du plan (semaines)", 1, 52, plan.n_weeks, key=f"n_{key}_{ver}"))
+        diff = target - plan.n_weeks
+        with c_apply.popover("Appliquer la durée", disabled=diff == 0, icon=":material/date_range:"):
+            st.write(f"{diff} semaine(s) seront ajoutées **au début** (3 séances à compléter)." if diff > 0 else
+                     f"Les **{-diff} premières semaines** et leurs séances seront supprimées.")
+            st.caption("La fin du plan (affûtage et semaine de course) ne bouge pas.")
+            st.button("Confirmer", type="primary", key=f"rs_{key}_{ver}",
+                      on_click=apply, args=(lambda p: p.resize(target), f"Plan ajusté à {target} semaines"))
+        with c_add, st.container(horizontal=True):
+            st.button("Semaine au début", icon=":material/add:", key=f"af_{key}_{ver}",
+                      on_click=apply, args=(lambda p: p.insert_week(0), "Semaine ajoutée au début"))
+            st.button("Semaine à la fin", icon=":material/add:", key=f"al_{key}_{ver}",
+                      on_click=apply, args=(lambda p: p.insert_week(p.n_weeks), "Semaine ajoutée à la fin"))
+        st.caption("Double-clique sur une case pour la modifier ; « + » sous un tableau ajoute une séance, "
+                   "la case à cocher d'une ligne puis la corbeille la supprime. Tout est enregistré automatiquement.")
+
+    for _, week in plan.weeks.sort_values("position").iterrows():
+        wid, pos = week["week_id"], int(week["position"])
+        start = plan.week_start(pos, race_date)
+        with st.container(border=True, key=f"card-week-{key}-{wid}"):
+            c_t, c_p, c_a = st.columns([1.5, 3, 0.9], vertical_alignment="center")
+            dates = f" — du {fr_date(start)} au {fr_date(start + timedelta(days=6))}" if start else ""
+            c_t.markdown(f"**{Plan.week_label(pos)}**{dates}")
+            phase_key = f"ph_{key}_{wid}_{ver}"
+            c_p.text_input("Phase", value=week["phase"], key=phase_key, label_visibility="collapsed",
+                           placeholder="Phase ou objectif de la semaine (facultatif)",
+                           on_change=lambda w=wid, k=phase_key: apply(lambda p: p.set_phase(w, st.session_state[k]),
+                                                                       "Phase enregistrée"))
+            with c_a.popover("Actions", icon=":material/more_horiz:", width="stretch"):
+                st.button("Insérer une semaine avant", icon=":material/add:", key=f"ins_{key}_{wid}_{ver}",
+                          width="stretch", on_click=apply,
+                          args=(lambda p, i=pos: p.insert_week(i), "Semaine insérée"))
+                st.button("Dupliquer (copie avant)", icon=":material/content_copy:", key=f"dup_{key}_{wid}_{ver}",
+                          width="stretch", on_click=apply,
+                          args=(lambda p, w=wid: p.duplicate_week(w), "Semaine dupliquée"))
+                ok = st.checkbox("Confirmer la suppression", key=f"cf_{key}_{wid}_{ver}")
+                st.button("Supprimer la semaine", icon=":material/delete:", type="primary", width="stretch",
+                          key=f"del_{key}_{wid}_{ver}", disabled=not ok or plan.n_weeks <= 1, on_click=apply,
+                          args=(lambda p, w=wid: p.delete_week(w), "Semaine supprimée"))
+            view = editor_frame(plan.sessions_of(wid), paces, seconds)
+            edited = st.data_editor(view, key=f"ed_{key}_{wid}_{ver}_{seconds}", num_rows="dynamic",
+                                    hide_index=True, width="stretch", column_config=column_config(),
+                                    disabled=COMPUTED, placeholder="")
+            if not sessions_equal(edited[SESSION_INPUT_COLUMNS], view[SESSION_INPUT_COLUMNS]):
+                save(load().replace_week_sessions(wid, edited[SESSION_INPUT_COLUMNS]),
+                     f"{Plan.week_label(pos)} enregistrée")
+                bump(key)
+                st.rerun()
+
+
+# =========================================================================== formules
+def ratios_editor(ratios: dict[str, float], distance: str, objective_seconds: int, key: str,
+                  on_save: Callable[[dict[str, float]], None]) -> None:
+    """Tableau des ratios (en %), avec l'allure obtenue pour l'objectif indiqué."""
+    ver = version(key)
+    paces = compute_paces(objective_seconds, distance, ratios)
+    df = pd.DataFrame([{
+        "code": c, "Allure": PACE_LABELS[c], "Calculée à partir de": PACE_BY_CODE[c].base,
+        "Pourcentage": float(ratios[c]), "Résultat": f"{paces[c].pace_str} /km",
+        "Formule": ratio_formula(c, ratios),
+    } for c in RATIO_CODES])
+    edited = st.data_editor(
+        df, key=f"rat_{key}_{ver}_{objective_seconds}", hide_index=True, width="stretch",
+        disabled=["Allure", "Calculée à partir de", "Résultat", "Formule"], column_order=[
+            "Allure", "Calculée à partir de", "Pourcentage", "Formule", "Résultat"],
+        column_config={"Pourcentage": st.column_config.NumberColumn(
+            "Ratio (% de la vitesse)", min_value=50.0, max_value=200.0, step=0.5, format="%.1f %%", required=True,
+            help="Ex. 105 % : 5 % plus rapide que l'allure de référence")})
+    new = {r["code"]: float(r["Pourcentage"]) for _, r in edited.iterrows()}
+    if any(abs(new[c] - float(ratios[c])) > 1e-9 for c in RATIO_CODES):
+        on_save(new)
+        bump(key)
+        st.rerun()
+
+
+# =========================================================================== exports
+def exports_bar(student, table: pd.DataFrame, paces: dict[str, Pace], seconds: int, key: str) -> None:
+    """Boutons d'export Excel / CSV et d'impression du plan affiché."""
+    stem = f"plan_{student.distance}_{student.display_name}".replace(" ", "_")
+    doc = print_document(student, table, paces, seconds)
+    with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="right", gap="small"):
+        components.html(print_button_html(doc), height=44, width=185)
+        st.download_button("Excel", export_excel(student, table, paces, seconds), file_name=f"{stem}.xlsx",
+                           icon=":material/download:", key=f"xl_{key}", on_click="ignore",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        st.download_button("CSV", export_csv(table), file_name=f"{stem}.csv", mime="text/csv",
+                           icon=":material/download:", key=f"csv_{key}", on_click="ignore")
+        st.download_button("Page imprimable", print_page(doc, f"Plan de {student.display_name}"),
+                           file_name=f"{stem}.html", mime="text/html", icon=":material/description:",
+                           key=f"html_{key}", on_click="ignore",
+                           help="Page à ouvrir dans le navigateur puis à imprimer, si le bouton Imprimer est bloqué")
