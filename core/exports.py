@@ -11,55 +11,81 @@ from datetime import date, datetime
 import pandas as pd
 from openpyxl.styles import Alignment, Font, PatternFill
 
-from .calculs import Pace, format_minutes, format_race_time, fr_number, ratio_formula
-from .config import DISPLAY_NAMES, DISTANCES, FREQ_LABELS, PACE_LABELS, ZONE_COLORS
-from .plan import week_summary
+from .calculs import format_minutes, format_pct_range, format_race_time, fr_number, ratio_formula
+from .config import DAY_LABELS, DAYS, DISPLAY_NAMES, DISTANCES, FREQ_LABELS, METHODS, PACE_LABELS, ZONE_COLORS
+from .plan import is_race_day, pace_codes, week_summary
 
-EXPORT_COLUMNS = ["semaine", "debut", "fin", "phase", "seance", "km_env", "duree_env", "contenu", "km_spe",
-                  "allure", "allure_txt", "allure_dec", "vitesse", "temps_spe_min", "frequence", "remarque"]
+EXPORT_COLUMNS = ["semaine", "debut", "fin", "phase", "seance", "date", "km_env", "duree_env", "contenu",
+                  "allure", "allure_txt", "km_spe", "temps_aff", "temps_spe_min", "frequence", "fait", "remarque"]
 
 MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
+WEEKDAYS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
 
 
-def fr_date(d: date | None, year: bool = False) -> str:
-    if d is None:
+def fr_date(d: date | None, year: bool = False, weekday: bool = False) -> str:
+    if not isinstance(d, date):
         return ""
-    return f"{d.day} {MONTHS[d.month - 1]}" + (f" {d.year}" if year else "")
+    txt = f"{d.day} {MONTHS[d.month - 1]}" + (f" {d.year}" if year else "")
+    return f"{WEEKDAYS[d.weekday()]} {txt}" if weekday else txt
 
 
-def export_table(table: pd.DataFrame) -> pd.DataFrame:
-    out = table.reindex(columns=EXPORT_COLUMNS).copy()
-    out["allure"] = [PACE_LABELS.get(c, "") if isinstance(c, str) else "" for c in out["allure"]]
+def pace_labels(value) -> str:
+    return ", ".join(PACE_LABELS[c] for c in pace_codes(value))
+
+
+def export_table(table: pd.DataFrame, done: set[str] | None = None) -> pd.DataFrame:
+    out = table.copy()
+    out["fait"] = ["Oui" if done and sid in done else ("Non" if done is not None else "")
+                   for sid in out.get("session_id", [""] * len(out))]
+    out = out.reindex(columns=EXPORT_COLUMNS)
+    out["allure"] = [pace_labels(c) for c in out["allure"]]
     out["frequence"] = [FREQ_LABELS.get(f, "") for f in out["frequence"]]
     out["temps_spe_min"] = pd.to_numeric(out["temps_spe_min"], errors="coerce").round(0)
+    if done is None:
+        out = out.drop(columns=["fait"])
     return out.rename(columns=DISPLAY_NAMES)
 
 
-def paces_table(paces: dict[str, Pace], ratios: dict[str, float]) -> pd.DataFrame:
-    return pd.DataFrame([{
-        "Zone": i, "Allure": p.label, "Correspond à": p.description, "Formule": ratio_formula(p.code, ratios),
-        "Vitesse (km/h)": round(p.kmh, 1), "Allure (min/km)": p.pace_str,
-        "Équivalence": f"{p.ref_label} en {format_minutes(p.ref_time_minutes)}" if p.ref_time_minutes else "",
-    } for i, p in enumerate(paces.values(), start=1)])
+def paces_table(sp, student) -> pd.DataFrame:
+    """Tableau des allures retenues, avec la formule de la méthode utilisée."""
+    rows = []
+    for i, p in enumerate(sp.paces.values(), start=1):
+        if sp.method == "vma":
+            lo, hi = student.vma_pct[p.code]
+            formula = f"{format_pct_range(lo, hi)} de VMA ({fr_number(student.vma)} km/h)"
+        else:
+            formula = ratio_formula(p.code, student.ratios)
+        rows.append({"Zone": i, "Allure": p.label, "Correspond à": p.description, "Formule": formula,
+                     "Vitesse": p.kmh_str, "Allure (min/km)": p.pace_str,
+                     "Équivalence": f"{p.ref_label} en {format_minutes(p.ref_time_minutes)}" if p.ref_time_minutes else ""})
+    return pd.DataFrame(rows)
 
 
-def profile_rows(student, objective_seconds: int) -> list[tuple[str, str]]:
+def profile_rows(student, sp, frequency: int, race_time: str = "") -> list[tuple[str, str]]:
     dist = DISTANCES[student.distance]
-    return [
-        ("Élève", student.display_name), ("E-mail", student.email), ("Distance", dist.label),
-        ("Objectif", format_race_time(objective_seconds)),
-        ("Date de course", student.date_course.strftime("%d/%m/%Y") if student.date_course else "non renseignée"),
-        ("Séances par semaine", str(student.frequence)), ("Semaines de plan", str(student.plan.n_weeks)),
-        ("Généré le", datetime.now().strftime("%d/%m/%Y %H:%M")),
-    ]
+    rows = [("Élève", student.display_name), ("E-mail", student.email), ("Distance", dist.label),
+            ("Méthode de calcul", METHODS[sp.method])]
+    if student.objectif:
+        rows.append(("Objectif", format_race_time(sp.race_seconds)))
+    else:
+        rows.append(("Temps estimé", format_race_time(sp.race_seconds)))
+    if student.vma is not None:
+        rows.append(("VMA", f"{fr_number(student.vma)} km/h"))
+    rows += [("Date de course", student.date_course.strftime("%d/%m/%Y") if student.date_course else "non renseignée"),
+             ("Séances par semaine", str(frequency)), ("Semaines de plan", str(student.plan.n_weeks))]
+    if race_time:
+        rows.append(("Temps réalisé", race_time))
+    rows.append(("Généré le", datetime.now().strftime("%d/%m/%Y %H:%M")))
+    return rows
 
 
-def export_excel(student, table: pd.DataFrame, paces: dict[str, Pace], objective_seconds: int) -> bytes:
+def export_excel(student, table: pd.DataFrame, sp, frequency: int, done: set[str] | None = None,
+                 race_time: str = "") -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export_table(table).to_excel(writer, sheet_name="Plan", index=False)
-        paces_table(paces, student.ratios).to_excel(writer, sheet_name="Allures", index=False)
-        pd.DataFrame(profile_rows(student, objective_seconds), columns=["", "Valeur"]).to_excel(
+        export_table(table, done).to_excel(writer, sheet_name="Plan", index=False)
+        paces_table(sp, student).to_excel(writer, sheet_name="Allures", index=False)
+        pd.DataFrame(profile_rows(student, sp, frequency, race_time), columns=["", "Valeur"]).to_excel(
             writer, sheet_name="Profil", index=False)
         header_fill, band = PatternFill("solid", fgColor="1B4F8C"), PatternFill("solid", fgColor="EAF0F7")
         for ws in writer.book.worksheets:
@@ -73,7 +99,7 @@ def export_excel(student, table: pd.DataFrame, paces: dict[str, Pace], objective
                 ws.column_dimensions[col_cells[0].column_letter].width = min(max(9, length + 2), 42)
         ws = writer.book["Plan"]
         headers = [c.value for c in ws[1]]
-        date_cols = {headers.index(DISPLAY_NAMES[k]) + 1 for k in ("debut", "fin")}
+        date_cols = {headers.index(DISPLAY_NAMES[k]) + 1 for k in ("debut", "fin", "date")}
         shade, previous = False, None
         for row in ws.iter_rows(min_row=2):
             if row[0].value != previous:
@@ -86,10 +112,10 @@ def export_excel(student, table: pd.DataFrame, paces: dict[str, Pace], objective
     return buffer.getvalue()
 
 
-def export_csv(table: pd.DataFrame) -> bytes:
+def export_csv(table: pd.DataFrame, done: set[str] | None = None) -> bytes:
     """CSV pour Excel en français : séparateur « ; », virgule décimale, UTF-8 avec BOM."""
-    df = export_table(table)
-    for col in (DISPLAY_NAMES["debut"], DISPLAY_NAMES["fin"]):
+    df = export_table(table, done)
+    for col in (DISPLAY_NAMES["debut"], DISPLAY_NAMES["fin"], DISPLAY_NAMES["date"]):
         df[col] = [d.strftime("%d/%m/%Y") if isinstance(d, date) else "" for d in df[col]]
     return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
 
@@ -114,40 +140,48 @@ PRINT_CSS = """
           padding: 3px 5px; }
 .doc td { padding: 4px 5px; border-bottom: 1px solid #E3E9F0; vertical-align: top; }
 .doc .paces td { padding: 3px 5px; }
-.doc .zone { display: inline-block; min-width: 18px; text-align: center; border-radius: 3px; font-weight: 700;
-             padding: 0 4px; margin-right: 6px; }
+.doc .zone { display: inline-block; text-align: center; border-radius: 3px; font-weight: 700;
+             padding: 0 4px; margin: 0 4px 2px 0; white-space: nowrap; }
 .doc .week { break-inside: avoid; page-break-inside: avoid; margin-top: 12px; }
 .doc .week h2 { font-family: 'Barlow Condensed', sans-serif; font-size: 13.5pt; margin: 0 0 2px; font-weight: 700; }
 .doc .week h2 small { font-family: Barlow, sans-serif; font-size: 9pt; color: #5B6B80; font-weight: 500; }
 .doc .phase { color: #1B4F8C; font-size: 9pt; margin-bottom: 3px; }
 .doc .race td { font-weight: 600; background: #FFF4D1; }
 .doc .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.doc .box { font-size: 13pt; line-height: 1; }
 .doc .foot { margin-top: 14px; color: #5B6B80; font-size: 8.5pt; }
 """
 
 
-def _zone_badge(code: str | None, text: str = "") -> str:
-    if not code:
-        return ""
-    bg, fg = ZONE_COLORS[code]
-    label = html.escape(PACE_LABELS.get(code, code))
-    return (f"<span class='zone' style='background:{bg};color:{fg}'>{html.escape(label)}</span>"
-            f"<span class='num'>{html.escape(text)}</span>")
+def _zone_badges(value, paces) -> str:
+    out = []
+    for code in pace_codes(value):
+        bg, fg = ZONE_COLORS[code]
+        txt = paces[code].pace_str if code in paces else ""
+        out.append(f"<span class='zone' style='background:{bg};color:{fg}'>{html.escape(PACE_LABELS[code])}</span>"
+                   f"<span class='num'>{html.escape(txt)}</span> ")
+    return "<br>".join(out)
 
 
-def print_document(student, table: pd.DataFrame, paces: dict[str, Pace], objective_seconds: int) -> str:
+def print_document(student, table: pd.DataFrame, sp, frequency: int, done: set[str] | None = None,
+                   race_time: str = "") -> str:
     """Corps HTML du plan imprimable (sans <html>), utilisé par le bouton et par le téléchargement."""
     e = html.escape
     dist = DISTANCES[student.distance]
     race = f"Course le {fr_date(student.date_course, True)}" if student.date_course else "Date de course non renseignée"
+    basis = (f"allures sur VMA {fr_number(student.vma)} km/h" if sp.method == "vma"
+             else "allures sur l'objectif de temps")
+    goal_label = "Objectif" if student.objectif else "Temps estimé"
     parts = [f"<div class='doc'><div class='head'><div><h1>{e(student.display_name)}</h1>"
-             f"<div class='meta'>{e(dist.label)} — {e(race)} — {student.frequence} séances par semaine</div></div>"
-             f"<div class='goal'><div class='meta'>Objectif</div><b>{e(format_race_time(objective_seconds))}</b></div></div>"]
+             f"<div class='meta'>{e(dist.label)} — {e(race)} — {frequency} séances par semaine — {e(basis)}</div></div>"
+             f"<div class='goal'><div class='meta'>{goal_label}</div><b>{e(format_race_time(sp.race_seconds))}</b>"
+             + (f"<div class='meta'>Réalisé : <b style='font-size:13pt'>{e(race_time)}</b></div>" if race_time else "")
+             + "</div></div>"]
     rows = "".join(
-        f"<tr><td>{_zone_badge(p.code, '')}</td><td class='num'><b>{e(p.pace_str)} /km</b></td>"
-        f"<td class='num'>{e(fr_number(p.kmh))} km/h</td><td>{e(p.description)}</td>"
+        f"<tr><td>{_zone_badges(p.code, {})}</td><td class='num'><b>{e(p.pace_str)} /km</b></td>"
+        f"<td class='num'>{e(p.kmh_str)}</td><td>{e(p.description)}</td>"
         f"<td class='num'>{e(f'{p.ref_label} en {format_minutes(p.ref_time_minutes)}') if p.ref_time_minutes else ''}</td></tr>"
-        for p in paces.values())
+        for p in sp.paces.values())
     parts.append(f"<table class='paces'><tr><th>Allure</th><th>Rythme</th><th>Vitesse</th><th>Usage</th>"
                  f"<th>Équivalence</th></tr>{rows}</table>")
     if not table.empty:
@@ -157,24 +191,29 @@ def print_document(student, table: pd.DataFrame, paces: dict[str, Pace], objecti
             dates = (f" <small>du {fr_date(first['debut'])} au {fr_date(first['fin'])}</small>"
                      if isinstance(first["debut"], date) else "")
             summary = week_summary(sub)
-            volume = " — ".join(x for x in (summary.km_str, summary.duration_str) if x)
+            volume = ", ".join(x for x in (summary.km_str, summary.duration_str) if x)
             parts.append(f"<div class='week'><h2>Semaine {int(position) + 1}{dates}"
                          f"{f' <small>{e(volume)}</small>' if volume else ''}</h2>")
             if first["phase"]:
                 parts.append(f"<div class='phase'>{e(first['phase'])}</div>")
-            parts.append("<table><tr><th style='width:9%'>Séance</th><th>Contenu</th><th style='width:8%'>Km</th>"
-                         "<th style='width:9%'>Durée</th><th style='width:24%'>Allure</th><th style='width:9%'>Temps spé.</th>"
-                         "<th style='width:17%'>Remarque</th></tr>")
+            parts.append("<table><tr><th style='width:4%'></th><th style='width:13%'>Séance</th><th>Contenu</th>"
+                         "<th style='width:6%'>Km</th><th style='width:8%'>Durée</th><th style='width:24%'>Allure</th>"
+                         "<th style='width:8%'>Temps spé.</th><th style='width:15%'>Remarque</th></tr>")
             for _, r in sub.iterrows():
-                cls = " class='race'" if str(r["seance"]).upper().replace(" ", "") == "JOURJ" else ""
+                race_row = is_race_day(r["seance"])
+                checked = done is not None and (r["session_id"] in done or (race_row and race_time))
+                when = fr_date(r.get("date"), weekday=True)
+                label = e(str(r["seance"])) + (f"<br><span class='meta'>{e(when)}</span>" if when else "")
+                content = e(str(r["contenu"])) + (f"<br><b>Réalisé : {e(race_time)}</b>" if race_row and race_time else "")
                 parts.append(
-                    f"<tr{cls}><td>{e(str(r['seance']))}</td><td>{e(str(r['contenu']))}</td>"
+                    f"<tr{' class=race' if race_row else ''}><td class='box'>{'☑' if checked else '☐'}</td>"
+                    f"<td>{label}</td><td>{content}</td>"
                     f"<td class='num'>{e(str(r['km_env']))}</td><td class='num'>{e(str(r['duree_env']))}</td>"
-                    f"<td>{_zone_badge(r['allure'], r['allure_txt'] + ' /km' if r['allure_txt'] else '')}</td>"
-                    f"<td class='num'>{e(str(r['temps_spe']))}</td><td>{e(str(r['remarque']))}</td></tr>")
+                    f"<td>{_zone_badges(r['allure'], sp.paces)}</td>"
+                    f"<td class='num'>{e(str(r['temps_aff']))}</td><td>{e(str(r['remarque']))}</td></tr>")
             parts.append("</table></div>")
-    parts.append(f"<div class='foot'>Plan généré le {datetime.now():%d/%m/%Y}. Allures calculées à partir de "
-                 f"l'objectif et des formules de ton coach.</div></div>")
+    parts.append(f"<div class='foot'>Plan généré le {datetime.now():%d/%m/%Y}. Allures calculées par ton coach "
+                 f"({e(basis)}). Coche ☐ chaque séance réalisée.</div></div>")
     return "".join(parts)
 
 
@@ -202,3 +241,7 @@ html, body {{ margin: 0; background: transparent; }}
 <button class="btn" onclick="window.print()">🖨️ {html.escape(label)}</button>
 {body}
 """
+
+
+__all__ = ["DAYS", "DAY_LABELS", "fr_date", "export_excel", "export_csv", "print_document", "print_page",
+           "print_button_html", "paces_table"]

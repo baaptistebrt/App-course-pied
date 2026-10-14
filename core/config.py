@@ -30,13 +30,14 @@ class Distance:
     default_objective: str   # objectif proposé à la création d'un élève
     min_seconds: int         # bornes de saisie de l'objectif
     max_seconds: int
+    default_method: str      # « temps » ou « vma » à la création d'un élève
 
 
 DISTANCES: dict[str, Distance] = {
     # 42,2 km comme la cellule C4 de l'Excel (et non 42,195), pour rester fidèle aux calculs.
-    "marathon": Distance("marathon", "Marathon", 42.2, "A1", "03:30:00", 1 * 3600 + 50 * 60, 8 * 3600),
-    "semi": Distance("semi", "Semi-marathon", 21.1, "A2", "01:45:00", 50 * 60, 4 * 3600),
-    "10k": Distance("10k", "10 km", 10.0, "A3", "00:50:00", 25 * 60, 2 * 3600),
+    "marathon": Distance("marathon", "Marathon", 42.2, "A1", "03:30:00", 1 * 3600 + 50 * 60, 8 * 3600, "temps"),
+    "semi": Distance("semi", "Semi-marathon", 21.1, "A2", "01:45:00", 50 * 60, 4 * 3600, "temps"),
+    "10k": Distance("10k", "10 km", 10.0, "A3", "00:50:00", 25 * 60, 2 * 3600, "vma"),
 }
 DISTANCE_KEYS: list[str] = list(DISTANCES)
 
@@ -71,6 +72,20 @@ PACE_LABELS: dict[str, str] = {p.code: p.label for p in PACE_DEFINITIONS}
 RATIO_CODES: list[str] = [p.code for p in PACE_DEFINITIONS if p.base is not None]
 DEFAULT_RATIOS: dict[str, float] = {p.code: p.default_pct for p in PACE_DEFINITIONS if p.base is not None}
 
+# ----------------------------------------------------------------------------
+# Méthodes de calcul : objectif de temps (ratios) ou VMA (% de VMA)
+# ----------------------------------------------------------------------------
+METHODS: dict[str, str] = {"temps": "Objectif de temps", "vma": "VMA"}
+VMA_MIN, VMA_MAX, VMA_DEFAULT = 8.0, 30.0, 15.0
+# Plages de % de VMA par allure (min, max), reprises du plan 10 km de référence (VMA en L10) :
+#   Endurance = VMA × 68 % (M5)   A1 = 75 % (M6)   A2 = « 80 à 85 % » (M7 = 80 %)   A3 = « 85 à 90 % » (M8 = 85 %)
+# Comme l'Excel, l'allure de référence est calculée sur le bas de la plage ; la plage complète est affichée.
+# A4 et Sprint n'existent pas dans l'Excel : valeurs usuelles (30"/30" autour de la VMA), modifiables.
+DEFAULT_VMA_PCT: dict[str, tuple[float, float]] = {
+    "Endurance": (68.0, 68.0), "A1": (75.0, 75.0), "A2": (80.0, 85.0),
+    "A3": (85.0, 90.0), "A4": (90.0, 95.0), "Sprint": (100.0, 105.0),
+}
+
 # Couleur d'intensité de chaque allure (du plus facile au plus intense).
 ZONE_COLORS: dict[str, tuple[str, str]] = {   # (fond, texte)
     "Endurance": ("#2F9E6E", "#FFFFFF"),
@@ -90,6 +105,11 @@ FREQ_ALWAYS = "3-4"     # séance faite dans les deux cas
 FREQ_ONLY_4 = "4"       # séance faite seulement à 4 séances par semaine
 FREQ_LABELS: dict[str, str] = {FREQ_ALWAYS: "Toujours", FREQ_ONLY_4: "Si 4 séances"}
 
+# Jours de la semaine (date réelle d'une séance = lundi de la semaine + décalage)
+DAYS: list[str] = ["lun", "mar", "mer", "jeu", "ven", "sam", "dim"]
+DAY_LABELS: dict[str, str] = {"lun": "Lundi", "mar": "Mardi", "mer": "Mercredi", "jeu": "Jeudi",
+                              "ven": "Vendredi", "sam": "Samedi", "dim": "Dimanche"}
+
 # Séance de course : sa durée est l'objectif (cellule E11 = D4 de l'Excel).
 RACE_DAY_LABEL = "JOUR J"
 
@@ -97,27 +117,31 @@ RACE_DAY_LABEL = "JOUR J"
 # Schéma des séances
 # ----------------------------------------------------------------------------
 SESSION_COLUMNS: list[str] = [
+    "session_id",  # identifiant stable de la séance (sert au suivi « séance réalisée »)
     "week_id",     # identifiant de la semaine
     "ordre",       # ordre dans la semaine
+    "jour",        # jour de la semaine (lun… dim), facultatif -> date réelle de la séance
     "seance",      # s1, s2… ou JOUR J
     "km_env",      # kilométrage approximatif (texte : « 12 », « 25 à 30 »)
     "duree_env",   # durée approximative (h:mm)
     "contenu",     # contenu / partie spécifique
-    "km_spe",      # km à l'allure choisie (nombre) -> temps spécifique
-    "allure",      # code du type d'allure
+    "km_spe",      # km à l'allure choisie (nombre) -> temps spécifique calculé (plan marathon)
+    "temps_spe",   # temps spécifique saisi (texte, ex. « 27'30 », plan 10 km) ; prioritaire sur le calcul
+    "allure",      # code(s) d'allure, séparés par des virgules : « A1 » ou « A1,A3 »
     "frequence",   # « 3-4 » (toujours) ou « 4 » (seulement à 4 séances/semaine)
     "remarque",    # note libre
 ]
 SESSION_INPUT_COLUMNS: list[str] = [c for c in SESSION_COLUMNS if c not in ("week_id", "ordre")]
-SESSION_TEXT_COLUMNS: list[str] = ["seance", "km_env", "duree_env", "contenu", "remarque"]
+SESSION_TEXT_COLUMNS: list[str] = ["session_id", "seance", "km_env", "duree_env", "contenu", "temps_spe", "remarque"]
 WEEK_COLUMNS: list[str] = ["week_id", "position", "phase"]
 
 DISPLAY_NAMES: dict[str, str] = {
-    "semaine": "Semaine", "debut": "Du", "fin": "Au", "phase": "Phase",
+    "semaine": "Semaine", "debut": "Du", "fin": "Au", "phase": "Phase", "date": "Date", "jour": "Jour",
+    "fait": "Réalisée",
     "seance": "Séance", "km_env": "Km (env.)", "duree_env": "Durée (env.)",
     "contenu": "Contenu", "km_spe": "Km spé.", "allure": "Allure",
     "frequence": "Fréquence", "allure_txt": "Allure /km", "allure_dec": "Allure (min,cent./km)",
-    "vitesse": "km/h", "temps_spe": "Temps spé.", "temps_spe_min": "Temps spé. (min)",
+    "vitesse": "km/h", "temps_aff": "Temps spé.", "temps_spe_min": "Temps spé. calculé (min)",
     "remarque": "Remarque",
 }
 

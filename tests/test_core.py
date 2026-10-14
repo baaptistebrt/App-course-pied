@@ -96,9 +96,9 @@ def test_parse_objectif_invalide(txt, dist):
 
 # ---------------------------------------------------------------- modèles et plan
 def test_modeles_par_defaut():
-    for d in ("marathon", "semi", "10k"):
+    for d, n in (("marathon", 7), ("semi", 7), ("10k", 12)):
         t = referentiel.default_template(d)
-        assert t.n_weeks == 7                                  # 6 semaines + semaine de course
+        assert t.n_weeks == n                                  # 6 sem. + course ; 10 km : 12 sem. (Excel)
         last = t.sessions_of(t.weeks["week_id"].iloc[-1])
         assert "JOUR J" in list(last["seance"])
     m = referentiel.default_template("marathon")
@@ -132,20 +132,20 @@ def test_creation_eleve_et_persistance(store):
     assert loaded.date_course == date(2026, 12, 6) and loaded.plan.n_weeks == 7
     assert profils.find_by_code(store, s.code.lower().replace("-", " ")).id == s.id
     with pytest.raises(ValueError):
-        profils.create_student(store, "julie@example.com", "", "semi")       # doublon
+        profils.create_student(store, "julie@example.com", "", "semi", "1:45:00")       # doublon
     with pytest.raises(ValueError):
-        profils.create_student(store, "pas-un-email", "", "semi")
+        profils.create_student(store, "pas-un-email", "", "semi", "1:45:00")
 
 
 def test_codes_uniques(store):
-    codes = {profils.create_student(store, f"e{i}@x.fr", "", "10k").code for i in range(25)}
+    codes = {profils.create_student(store, f"e{i}@x.fr", "", "10k", "0:50:00").code for i in range(25)}
     assert len(codes) == 25
 
 
 def test_formules_globales_non_retroactives(store):
-    ancien = profils.create_student(store, "a@x.fr", "A", "marathon")
+    ancien = profils.create_student(store, "a@x.fr", "A", "marathon", "3:30:00")
     referentiel.save_global_ratios(store, "marathon", {"Endurance": 80})
-    nouveau = profils.create_student(store, "b@x.fr", "B", "marathon")
+    nouveau = profils.create_student(store, "b@x.fr", "B", "marathon", "3:30:00")
     assert profils.get_student(store, ancien.id).ratios["Endurance"] == 85
     assert nouveau.ratios["Endurance"] == 80
     assert referentiel.load_global_ratios(store)["semi"]["Endurance"] == 85   # autres distances intactes
@@ -154,7 +154,7 @@ def test_formules_globales_non_retroactives(store):
 def test_modele_modifie_pour_nouveaux_eleves(store):
     t = referentiel.load_template(store, "10k").resize(9)
     referentiel.save_template(store, "10k", t)
-    s = profils.create_student(store, "c@x.fr", "", "10k")
+    s = profils.create_student(store, "c@x.fr", "", "10k", "0:50:00")
     assert s.plan.n_weeks == 9
     s2 = s.with_(plan=s.plan.resize(5))
     profils.save_student(store, s2)
@@ -162,7 +162,7 @@ def test_modele_modifie_pour_nouveaux_eleves(store):
 
 
 def test_regeneration_et_suppression(store):
-    s = profils.create_student(store, "d@x.fr", "", "semi")
+    s = profils.create_student(store, "d@x.fr", "", "semi", "1:45:00")
     s2 = profils.regenerate_code(store, s)
     assert s2.code != s.code and profils.find_by_code(store, s.code) is None
     profils.delete_student(store, s.id)
@@ -170,7 +170,7 @@ def test_regeneration_et_suppression(store):
 
 
 def test_authentification(store):
-    s = profils.create_student(store, "e@x.fr", "", "marathon")
+    s = profils.create_student(store, "e@x.fr", "", "marathon", "3:30:00")
     editor = auth.EditorCode("Coach-Secret", "env")
     assert auth.authenticate("Coach-Secret", store, editor) == ("editeur", None)
     assert auth.authenticate(s.code, store, editor) == ("eleve", s.id)
@@ -179,11 +179,14 @@ def test_authentification(store):
 
 # ---------------------------------------------------------------- exports
 def test_exports(store):
+    from core.moteur import student_paces
+
     s = profils.create_student(store, "f@x.fr", "Fanny", "marathon", "3:29:00", date(2026, 10, 18), 3)
-    paces = compute_paces(OBJ, "marathon", s.ratios)
-    table = full_plan_table(s.plan, paces, OBJ, s.date_course, 3, hide_empty=True)
-    sheets = pd.read_excel(io.BytesIO(export_excel(s, table, paces, OBJ)), sheet_name=None)
+    sp = student_paces(s)
+    table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, 3, hide_empty=True)
+    sheets = pd.read_excel(io.BytesIO(export_excel(s, table, sp, 3, done=set())), sheet_name=None)
     assert set(sheets) == {"Plan", "Allures", "Profil"} and len(sheets["Plan"]) == len(table)
+    assert "Réalisée" in sheets["Plan"].columns
     assert export_csv(table).decode("utf-8-sig").splitlines()[0].startswith("Semaine;Du;Au")
-    doc = html.unescape(print_document(s, table, paces, OBJ))
+    doc = html.unescape(print_document(s, table, sp, 3))
     assert "Fanny" in doc and "3h29'00" in doc and doc.count("class='week'") == 7

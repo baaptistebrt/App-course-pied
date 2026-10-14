@@ -17,7 +17,8 @@ import math
 import re
 from dataclasses import dataclass
 
-from .config import DEFAULT_RATIOS, DISTANCES, PACE_DEFINITIONS, Distance
+from .config import (DEFAULT_RATIOS, DEFAULT_VMA_PCT, DISTANCES, PACE_CODES, PACE_DEFINITIONS, VMA_MAX, VMA_MIN,
+                     Distance)
 
 # ----------------------------------------------------------------------------
 # Conversions de durées
@@ -183,18 +184,35 @@ def ratio_formula(code: str, ratios: dict[str, float]) -> str:
 # ----------------------------------------------------------------------------
 @dataclass(frozen=True)
 class Pace:
+    """Allure calculée. Méthode « temps » : une valeur. Méthode « VMA » : une plage (kmh_min à kmh_max)."""
+
     code: str
     label: str
     description: str
-    kmh: float            # vitesse (colonne M de l'Excel)
-    min_per_km: float     # allure en minutes décimales (colonne N)
+    kmh: float            # vitesse de référence (bas de plage pour la VMA) — colonne M de l'Excel
+    min_per_km: float     # allure correspondante, minutes décimales — colonne N
     ref_km: float | None
     ref_label: str | None
-    is_anchor: bool       # allure fixée directement par l'objectif
+    is_anchor: bool       # allure de course de la distance préparée
+    kmh_min: float = 0.0  # plage (VMA) ; égales à kmh pour la méthode « temps »
+    kmh_max: float = 0.0
+
+    @property
+    def is_range(self) -> bool:
+        return self.kmh_max - self.kmh_min > 1e-9
 
     @property
     def pace_str(self) -> str:
-        return format_pace(self.min_per_km)
+        """« 4'57" » ou, pour une plage, « 4'25"–4'41" » (du plus rapide au plus lent)."""
+        if not self.is_range:
+            return format_pace(self.min_per_km)
+        return f"{format_pace(60 / self.kmh_max)}–{format_pace(60 / self.kmh_min)}"
+
+    @property
+    def kmh_str(self) -> str:
+        if not self.is_range:
+            return f"{fr_number(self.kmh)} km/h"
+        return f"{fr_number(self.kmh_min)}–{fr_number(self.kmh_max)} km/h"
 
     @property
     def ref_time_minutes(self) -> float | None:
@@ -204,16 +222,86 @@ class Pace:
 
 def compute_paces(objective_seconds: int, distance: str = "marathon",
                   ratios: dict | None = None) -> dict[str, Pace]:
-    """Toutes les allures pour un objectif sur une distance, avec des ratios donnés."""
+    """Méthode « objectif de temps » : toutes les allures pour un objectif, avec des ratios donnés."""
     dist = DISTANCES[distance]
     rel = relative_speeds(ratios or {})
     anchor_speed = dist.km / (objective_seconds / 60) * 60          # km/h
     a1_speed = anchor_speed / rel[dist.anchor]
-    return {
-        d.code: Pace(
-            code=d.code, label=d.label, description=d.description,
-            kmh=a1_speed * rel[d.code], min_per_km=60 / (a1_speed * rel[d.code]),
-            ref_km=d.ref_km, ref_label=d.ref_label, is_anchor=(d.code == dist.anchor),
-        )
-        for d in PACE_DEFINITIONS
-    }
+    out = {}
+    for d in PACE_DEFINITIONS:
+        v = a1_speed * rel[d.code]
+        out[d.code] = Pace(code=d.code, label=d.label, description=d.description, kmh=v, min_per_km=60 / v,
+                           ref_km=d.ref_km, ref_label=d.ref_label, is_anchor=(d.code == dist.anchor),
+                           kmh_min=v, kmh_max=v)
+    return out
+
+
+# ----------------------------------------------------------------------------
+# Méthode VMA
+# ----------------------------------------------------------------------------
+def parse_vma(text) -> float:
+    """VMA saisie (« 16 », « 16,5 », « 16.5 km/h ») -> km/h. Lève ValueError si invalide."""
+    if text is None or str(text).strip() == "":
+        raise ValueError("Saisis une VMA en km/h (ex. 16 ou 16,5).")
+    raw = str(text).lower().replace("km/h", "").replace(",", ".").strip()
+    try:
+        value = float(raw)
+    except ValueError:
+        raise ValueError(f"« {text} » n'est pas une VMA valide (ex. 16 ou 16,5).") from None
+    if not VMA_MIN <= value <= VMA_MAX:
+        raise ValueError(f"VMA hors limites : entre {VMA_MIN:g} et {VMA_MAX:g} km/h.")
+    return round(value, 2)
+
+
+def clean_vma_pct(pct: dict | None) -> dict[str, tuple[float, float]]:
+    """Plages de % de VMA complètes et valides (min ≤ max, entre 30 et 140 %)."""
+    out = dict(DEFAULT_VMA_PCT)
+    for code, value in (pct or {}).items():
+        if code not in out:
+            continue
+        try:
+            lo, hi = (value if isinstance(value, (tuple, list)) else (value, value))
+            lo, hi = float(str(lo).replace(",", ".")), float(str(hi).replace(",", "."))
+        except (TypeError, ValueError):
+            continue
+        lo, hi = min(lo, hi), max(lo, hi)
+        if 30 <= lo and hi <= 140:
+            out[code] = (round(lo, 1), round(hi, 1))
+    return out
+
+
+def format_pct_range(lo: float, hi: float) -> str:
+    f = lambda x: f"{x:g}".replace(".", ",")  # noqa: E731
+    return f"{f(lo)} %" if abs(hi - lo) < 1e-9 else f"{f(lo)}-{f(hi)} %"
+
+
+def compute_paces_vma(vma_kmh: float, distance: str = "10k", pct: dict | None = None) -> dict[str, Pace]:
+    """Méthode « VMA » : vitesse = VMA × % ; chaque allure est une plage (référence = bas de la plage)."""
+    dist = DISTANCES[distance]
+    pct = clean_vma_pct(pct)
+    out = {}
+    for d in PACE_DEFINITIONS:
+        lo, hi = pct[d.code]
+        v_lo, v_hi = vma_kmh * lo / 100, vma_kmh * hi / 100
+        # Référence = bas de la plage, comme les formules de l'Excel (M7 = L10 × 80 %).
+        out[d.code] = Pace(code=d.code, label=d.label, description=d.description, kmh=v_lo,
+                           min_per_km=60 / v_lo, ref_km=d.ref_km, ref_label=d.ref_label,
+                           is_anchor=(d.code == dist.anchor), kmh_min=v_lo, kmh_max=v_hi)
+    return out
+
+
+def race_seconds_from_paces(paces: dict[str, Pace], distance: str) -> int:
+    """Temps de course estimé : distance × allure de course (valeur de référence)."""
+    dist = DISTANCES[distance]
+    return int(round(dist.km * paces[dist.anchor].min_per_km * 60))
+
+
+def compare_paces(by_time: dict[str, Pace], by_vma: dict[str, Pace]) -> list[dict]:
+    """Lignes de comparaison objectif / VMA pour chaque allure (écart en secondes par km)."""
+    rows = []
+    for code in PACE_CODES:
+        t, v = by_time[code], by_vma[code]
+        diff = round((v.min_per_km - t.min_per_km) * 60)
+        rows.append({"code": code, "label": t.label, "temps": t.pace_str, "vma": v.pace_str,
+                     "ecart_s": diff, "is_anchor": t.is_anchor})
+    return rows

@@ -1,6 +1,8 @@
 """
-Interface éditeur (coach) : trois onglets Marathon / Semi-marathon / 10 km, chacun avec
-ses élèves, ses formules globales et son modèle de référence.
+Interface éditeur (coach).
+
+Onglets : Marathon / Semi-marathon / 10 km (élèves, formules, modèle de référence de la distance),
+Supervision (suivi de tous les élèves) et Réglages (e-mails, visuels, sauvegarde).
 """
 
 from __future__ import annotations
@@ -13,22 +15,36 @@ import streamlit as st
 
 from core import profils, referentiel
 from core.auth import load_editor_code
-from core.calculs import compute_paces, format_race_time, normalize_objective, parse_objective
-from core.config import DISTANCE_KEYS, DISTANCES, FREQUENCIES
+from core.calculs import (compute_paces, compute_paces_vma, format_race_time, fr_number, normalize_objective,
+                          parse_objective, parse_vma)
+from core.config import DEFAULT_VMA_PCT, DISTANCE_KEYS, DISTANCES, FREQUENCIES, METHODS, VMA_DEFAULT
+from core.emails import load_email_config, send_access_email, send_test_email
 from core.exports import fr_date
-from core.plan import full_plan_table, weeks_until
+from core.moteur import comparison, student_paces
+from core.plan import weeks_until
 from core.profils import Student
 from ui import composants as ui
-from ui.design import editor_track, paces_track, render, week_cards
+from ui import supervision
+from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render, week_cards
 
 FREQ_FMT = {3: "3 séances", 4: "4 séances"}
+DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:"}
+
+
+def app_url() -> str:
+    """Adresse de l'application, pour l'e-mail envoyé à l'élève."""
+    cfg = load_email_config()
+    if cfg and cfg.app_url:
+        return cfg.app_url
+    return str(getattr(st.context, "url", "") or "").split("?")[0].rstrip("/")
 
 
 # =========================================================================== barre latérale
 def sidebar(on_logout) -> None:
     store = ui.app_store()
     with st.sidebar:
-        st.markdown("### 🏃 Coach running")
+        st.html(f"<div style='display:flex;gap:10px;align-items:center'>{_logo()}"
+                "<b style='font-family:var(--cond);font-size:1.35rem'>Coach running</b></div>")
         st.caption("Connecté en tant que coach")
         if store.mirror:
             m = store.mirror
@@ -39,10 +55,18 @@ def sidebar(on_logout) -> None:
                            + (f", dernière à {m.last_success:%H:%M}" if m.last_success else ""))
         else:
             st.caption("Sauvegarde : fichiers du dossier `data/` du serveur.")
+        st.caption("E-mails : " + ("envoi automatique activé" if load_email_config() else
+                                   "non configurés (voir Réglages)"))
         if load_editor_code().is_demo:
             st.warning("Code coach de démonstration actif : définis le tien dans les Secrets (voir README).",
                        icon="🔐")
         st.button("Se déconnecter", icon=":material/logout:", on_click=on_logout, key="logout_editor")
+
+
+def _logo() -> str:
+    from ui.design import logo_svg
+
+    return logo_svg(34)
 
 
 # =========================================================================== page principale
@@ -52,20 +76,37 @@ def render_editor(on_logout) -> None:
     ui.show_notifications()
     counts = {d: len(profils.list_students(store, d)) for d in DISTANCE_KEYS}
     render(editor_track(counts))
-    tabs = st.tabs([DISTANCES[d].label for d in DISTANCE_KEYS], key="distance_tabs")
+    labels = [f"{DIST_ICONS[d]} {DISTANCES[d].label}" for d in DISTANCE_KEYS]
+    tabs = st.tabs([*labels, ":material/monitoring: Supervision", ":material/settings: Réglages"], key="main_tabs")
     for tab, d in zip(tabs, DISTANCE_KEYS):
         with tab:
             view = st.segmented_control("Vue", ["Élèves", "Formules", "Modèle de référence"], default="Élèves",
                                         required=True, key=f"view_{d}", label_visibility="collapsed")
             if view == "Formules":
-                render_global_ratios(d)
+                render_global_formulas(d)
             elif view == "Modèle de référence":
                 render_template(d)
             else:
                 render_students(d)
+    with tabs[len(DISTANCE_KEYS)]:
+        supervision.render_overview()
+    with tabs[len(DISTANCE_KEYS) + 1]:
+        render_settings()
 
 
 # =========================================================================== élèves
+def _send_code(student_id: str) -> None:
+    """Envoie (ou renvoie) le code d'accès à l'élève et note la date d'envoi."""
+    store = ui.app_store()
+    s = profils.get_student(store, student_id)
+    ok, message = send_access_email(s, load_email_config(), app_url())
+    if ok:
+        profils.save_student(store, s.with_(email_envoye_le=time.strftime("%Y-%m-%d %H:%M")))
+        ui.saved(message)
+    else:
+        ui.notify(message, "warning")
+
+
 def _create_student(distance: str) -> None:
     """Callback du formulaire « Nouvel élève »."""
     store = ui.app_store()
@@ -73,28 +114,40 @@ def _create_student(distance: str) -> None:
     try:
         student = profils.create_student(
             store, g("email") or "", g("prenom") or "", distance, g("objectif") or None, g("date"),
-            g("freq") or 4, reserved_codes={load_editor_code().value})
+            g("freq") or 4, reserved_codes={load_editor_code().value}, vma=g("vma") or None, methode=g("methode"))
     except ValueError as exc:
         ui.notify(str(exc), "error")
         return
     st.session_state[f"sel_{distance}"] = student.id
-    for k in ("email", "prenom", "date"):
+    for k in ("email", "prenom", "date", "vma"):
         st.session_state.pop(f"new_{k}_{distance}", None)
     ui.saved(f"{student.display_name} ajouté(e). Code d'accès : {student.code}")
+    if g("send") and load_email_config():
+        _send_code(student.id)
 
 
 def new_student_form(distance: str) -> None:
     dist = DISTANCES[distance]
+    email_ready = load_email_config() is not None
     with st.form(f"new_student_{distance}", border=False, clear_on_submit=False):
         st.text_input("E-mail de l'élève", key=f"new_email_{distance}", placeholder="prenom.nom@exemple.fr")
         st.text_input("Prénom (facultatif)", key=f"new_prenom_{distance}")
+        st.radio("Calcul des allures", list(METHODS), index=list(METHODS).index(dist.default_method),
+                 format_func=METHODS.get, horizontal=True, key=f"new_methode_{distance}",
+                 help="Tu peux renseigner les deux pour comparer, puis changer de méthode dans la fiche de l'élève")
         c1, c2 = st.columns(2)
         c1.text_input(f"Objectif {dist.label.lower()} (hh:mm:ss)", value=dist.default_objective,
-                      key=f"new_objectif_{distance}")
-        c2.date_input("Date de course (facultatif)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
+                      key=f"new_objectif_{distance}", help="Facultatif avec la méthode VMA")
+        c2.text_input("VMA (km/h)", key=f"new_vma_{distance}", placeholder=f"ex. {fr_number(VMA_DEFAULT)}",
+                      help="Facultatif avec la méthode objectif de temps")
+        c3, c4 = st.columns(2)
+        c3.date_input("Date de course (facultatif)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
                       min_value=date.today())
-        st.radio("Séances par semaine", FREQUENCIES, index=1, horizontal=True, format_func=FREQ_FMT.get,
-                 key=f"new_freq_{distance}")
+        c4.radio("Séances par semaine", FREQUENCIES, index=1 if distance != "10k" else 0, horizontal=True,
+                 format_func=FREQ_FMT.get, key=f"new_freq_{distance}")
+        st.checkbox("Envoyer le code d'accès par e-mail à l'élève", value=email_ready, disabled=not email_ready,
+                    key=f"new_send_{distance}",
+                    help=None if email_ready else "Configure l'envoi d'e-mails dans l'onglet Réglages")
         st.caption(f"Le plan part du modèle de référence {dist.label.lower()} et des formules globales actuelles. "
                    "Un code d'accès personnel est créé automatiquement.")
         st.form_submit_button("Créer l'élève", type="primary", on_click=_create_student, args=(distance,))
@@ -125,10 +178,11 @@ def render_students(distance: str) -> None:
 
     with st.expander(f"Tous les élèves en {label} ({len(students)})"):
         st.dataframe(pd.DataFrame([{
-            "Élève": s.display_name, "E-mail": s.email, "Code": s.code,
-            "Objectif": format_race_time(parse_objective(s.objectif, s.distance)),
+            "Élève": s.display_name, "E-mail": s.email, "Code": s.code, "Méthode": METHODS[s.methode],
+            "Objectif": format_race_time(parse_objective(s.objectif, s.distance)) if s.objectif else "",
+            "VMA": fr_number(s.vma) if s.vma is not None else "",
             "Course": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
-            "Séances/sem.": s.frequence, "Semaines": s.plan.n_weeks, "Créé le": s.cree_le,
+            "Semaines": s.plan.n_weeks, "Code envoyé le": s.email_envoye_le, "Créé le": s.cree_le,
         } for s in students]), hide_index=True, width="stretch")
 
 
@@ -146,16 +200,46 @@ def student_panel(s: Student) -> None:
     store = ui.app_store()
     key = f"stu_{s.id}"
     ver = ui.version(key)
-    seconds = parse_objective(s.objectif, s.distance)
-    paces = compute_paces(seconds, s.distance, s.ratios)
+    sp = student_paces(s)
 
     def on_objective(k: str) -> None:
+        raw = (st.session_state.get(k) or "").strip()
         try:
-            value = normalize_objective(st.session_state[k], s.distance)
+            value = normalize_objective(raw, s.distance) if raw else ""
         except ValueError as exc:
             ui.notify(str(exc), "error")
         else:
-            _save_student(s.id, "Objectif enregistré", objectif=value)
+            if not value and s.methode == "temps":
+                ui.notify("Cet élève est calculé sur son objectif : choisis d'abord la méthode VMA pour l'effacer.",
+                          "error")
+            elif not value and s.vma is None:
+                ui.notify("Il faut au moins un objectif ou une VMA.", "error")
+            else:
+                _save_student(s.id, "Objectif enregistré", objectif=value)
+        ui.bump(key)
+
+    def on_vma(k: str) -> None:
+        raw = (st.session_state.get(k) or "").strip()
+        try:
+            value = parse_vma(raw) if raw else None
+        except ValueError as exc:
+            ui.notify(str(exc), "error")
+        else:
+            if value is None and s.methode == "vma":
+                ui.notify("Cet élève est calculé sur sa VMA : choisis d'abord la méthode objectif pour l'effacer.",
+                          "error")
+            else:
+                _save_student(s.id, "VMA enregistrée", vma=value)
+        ui.bump(key)
+
+    def on_method(k: str) -> None:
+        value = st.session_state.get(k)
+        if value == "vma" and s.vma is None:
+            ui.notify("Renseigne d'abord une VMA pour cet élève.", "error")
+        elif value == "temps" and not s.objectif:
+            ui.notify("Renseigne d'abord un objectif de temps pour cet élève.", "error")
+        elif value in METHODS:
+            _save_student(s.id, f"Méthode retenue : {METHODS[value].lower()}", methode=value)
         ui.bump(key)
 
     def on_date(k: str) -> None:
@@ -165,13 +249,15 @@ def student_panel(s: Student) -> None:
     def on_freq(k: str) -> None:
         value = st.session_state.get(k)
         if value in FREQUENCIES:
-            _save_student(s.id, "Fréquence enregistrée", frequence_defaut=value)
+            _save_student(s.id, "Fréquence par défaut enregistrée", frequence_defaut=value)
         ui.bump(key)
 
     def regenerate() -> None:
         updated = profils.regenerate_code(store, profils.get_student(store, s.id),
                                           reserved_codes={load_editor_code().value})
         ui.saved(f"Nouveau code : {updated.code}. L'ancien ne fonctionne plus.")
+        if load_email_config():
+            _send_code(updated.id)
         ui.bump(key)
 
     def delete() -> None:
@@ -179,67 +265,110 @@ def student_panel(s: Student) -> None:
         st.session_state.pop(f"sel_{s.distance}", None)
         ui.saved(f"{s.display_name} supprimé(e)")
 
+    # ---- identité, code, e-mail
     with st.container(border=True, key=f"card-student-{s.id}"):
         c_who, c_code, c_act = st.columns([2.2, 2.2, 1], vertical_alignment="top")
         c_who.markdown(f"### {s.display_name}")
         c_who.caption(f"{s.email} — {DISTANCES[s.distance].label}, créé le {s.cree_le[:10]}")
         with c_code:
-            st.caption("Code d'accès à transmettre")
+            st.caption("Code d'accès")
             st.code(s.code, language=None)
-            base = str(getattr(st.context, "url", "") or "").split("?")[0].rstrip("/")
-            if base:
-                st.caption("Lien direct (connexion sans saisir le code)")
-                st.code(f"{base}/?code={s.code}", language=None)
+            if s.email_envoye_le:
+                st.caption(f"✉️ Envoyé par e-mail le {s.email_envoye_le[8:10]}/{s.email_envoye_le[5:7]} "
+                           f"à {s.email_envoye_le[11:16]}")
+            elif load_email_config():
+                st.caption("✉️ Pas encore envoyé par e-mail")
+            else:
+                st.caption(f"✉️ À transmettre à l'élève avec le lien : {app_url() or 'adresse de l app'}")
+            if load_email_config():
+                st.button("Renvoyer le code par e-mail" if s.email_envoye_le else "Envoyer le code par e-mail",
+                          icon=":material/mail:", key=f"mail_{s.id}_{ver}", on_click=_send_code, args=(s.id,))
         with c_act.popover("Actions", icon=":material/more_horiz:", width="stretch"):
             st.button("Générer un nouveau code", icon=":material/key:", on_click=regenerate,
-                      key=f"regen_{s.id}_{ver}", width="stretch",
-                      help="L'ancien code ne fonctionnera plus")
+                      key=f"regen_{s.id}_{ver}", width="stretch", help="L'ancien code ne fonctionnera plus")
             ok = st.checkbox("Confirmer la suppression", key=f"delok_{s.id}_{ver}")
             st.button("Supprimer l'élève", icon=":material/delete:", type="primary", disabled=not ok,
                       on_click=delete, key=f"del_{s.id}_{ver}", width="stretch")
 
-        c_obj, c_date, c_freq, c_info = st.columns([1, 1, 1.1, 1.6], vertical_alignment="bottom")
-        k_obj = f"obj_{s.id}_{ver}"
-        c_obj.text_input(f"Objectif {DISTANCES[s.distance].label.lower()}", value=s.objectif, key=k_obj,
-                         on_change=on_objective, args=(k_obj,), help="hh:mm:ss")
+        c_date, c_freq, c_info = st.columns([1, 1.1, 2], vertical_alignment="bottom")
         k_date = f"date_{s.id}_{ver}"
         c_date.date_input("Date de course (facultatif)", value=s.date_course, format="DD/MM/YYYY", key=k_date,
                           on_change=on_date, args=(k_date,))
         k_freq = f"freq_{s.id}_{ver}"
-        c_freq.segmented_control("Séances par semaine", FREQUENCIES, default=s.frequence_defaut,
-                                 format_func=FREQ_FMT.get, key=k_freq, on_change=on_freq, args=(k_freq,))
+        c_freq.segmented_control("Séances par semaine (défaut)", FREQUENCIES, default=s.frequence_defaut,
+                                 format_func=FREQ_FMT.get, key=k_freq, on_change=on_freq, args=(k_freq,),
+                                 help="L'élève peut ensuite choisir 3 ou 4 séances dans son espace")
         with c_info:
             info_weeks(s)
 
-    render(paces_track(paces))
+    # ---- moteur double : objectif / VMA, comparaison, méthode retenue
+    with st.container(border=True, key=f"card-method-{s.id}"):
+        st.markdown("**Calcul des allures**")
+        c_obj, c_vma, c_met = st.columns([1, 1, 1.4], vertical_alignment="bottom")
+        k_obj = f"obj_{s.id}_{ver}"
+        c_obj.text_input(f"Objectif {DISTANCES[s.distance].label.lower()}", value=s.objectif, key=k_obj,
+                         on_change=on_objective, args=(k_obj,), placeholder="hh:mm:ss")
+        k_vma = f"vma_{s.id}_{ver}"
+        c_vma.text_input("VMA (km/h)", value=fr_number(s.vma) if s.vma is not None else "", key=k_vma,
+                         on_change=on_vma, args=(k_vma,), placeholder=f"ex. {fr_number(VMA_DEFAULT)}")
+        k_met = f"met_{s.id}_{ver}"
+        c_met.segmented_control("Méthode retenue pour le plan", list(METHODS), default=s.methode,
+                                format_func=METHODS.get, key=k_met, on_change=on_method, args=(k_met,),
+                                required=True)
+        rows = comparison(s)
+        if rows:
+            st.caption("Comparaison des deux méthodes (écart = VMA − objectif, en secondes par km ; "
+                       "positif : la VMA donne une allure plus lente).")
+            st.dataframe(pd.DataFrame([{
+                "Allure": r["label"] + (" (course)" if r["is_anchor"] else ""), "Objectif de temps": r["temps"],
+                "VMA": r["vma"], "Écart (s/km)": f"{r['ecart_s']:+d}",
+            } for r in rows]), hide_index=True, width="stretch")
+        else:
+            st.caption("Renseigne aussi " + ("une VMA" if s.objectif else "un objectif") +
+                       " pour comparer les deux méthodes.")
 
-    t_plan, t_ratios, t_preview = st.tabs(["Plan de l'élève", "Formules de l'élève", "Aperçu et export"])
+    basis = ("Allures sur la VMA" if sp.method == "vma" else "Allures sur l'objectif de temps") + \
+            ("" if s.objectif else f" — temps de course estimé : {format_race_time(sp.race_seconds)}")
+    render(paces_track(sp.paces, basis))
+
+    t_plan, t_form, t_suivi, t_preview = st.tabs(["Plan de l'élève", "Formules de l'élève", "Suivi",
+                                                  "Aperçu et export"], key=f"stabs_{s.id}")
     with t_plan:
         ui.plan_editor(
-            s.plan, paces, seconds, s.date_course, key=f"plan_{s.id}",
+            s.plan, sp.paces, sp.race_seconds, s.date_course, key=f"plan_{s.id}",
             load=lambda: profils.get_student(store, s.id).plan,
             save=lambda plan, msg: _save_student(s.id, msg, plan=plan))
-    with t_ratios:
+    with t_form:
         st.caption("Formules propres à cet élève : copiées des formules globales à sa création, modifiables ici "
                    "sans toucher aux autres élèves.")
-        ui.ratios_editor(s.ratios, s.distance, seconds, key=f"ratios_{s.id}",
-                         on_save=lambda r: _save_student(s.id, "Formules de l'élève enregistrées", ratios=r))
-        globals_ = referentiel.load_global_ratios(store)[s.distance]
-        if globals_ != s.ratios:
+        st.markdown("**Objectif de temps** : ratios entre allures")
+        sample = parse_objective(s.objectif or DISTANCES[s.distance].default_objective, s.distance)
+        ui.ratios_editor(s.ratios, s.distance, sample, key=f"ratios_{s.id}",
+                         on_save=lambda r: _save_student(s.id, "Ratios de l'élève enregistrés", ratios=r))
+        st.markdown("**VMA** : plages de % de VMA")
+        ui.vma_pct_editor(s.vma_pct, s.distance, s.vma or VMA_DEFAULT, key=f"vmapct_{s.id}",
+                          on_save=lambda p: _save_student(s.id, "% VMA de l'élève enregistrés", vma_pct=p))
+        g_ratios = referentiel.load_global_ratios(store)[s.distance]
+        g_vma = referentiel.load_global_vma_pct(store)[s.distance]
+        if g_ratios != s.ratios or g_vma != s.vma_pct:
+            def reapply() -> None:
+                _save_student(s.id, "Formules globales appliquées", ratios=dict(g_ratios), vma_pct=dict(g_vma))
+                ui.bump(f"ratios_{s.id}")
+                ui.bump(f"vmapct_{s.id}")
             st.button("Reprendre les formules globales actuelles", icon=":material/sync:", key=f"rg_{s.id}_{ver}",
-                      on_click=lambda: (_save_student(s.id, "Formules globales appliquées", ratios=dict(globals_)),
-                                        ui.bump(f"ratios_{s.id}")))
+                      on_click=reapply)
+    with t_suivi:
+        supervision.render_student_suivi(s)
     with t_preview:
-        st.caption(f"Ce que voit l'élève avec {s.frequence} séances par semaine.")
-        table = full_plan_table(s.plan, paces, seconds, s.date_course, s.frequence, hide_empty=True)
-        ui.exports_bar(s, table, paces, seconds, key=f"exp_{s.id}")
-        render(week_cards(table))
+        stt = supervision.student_state(s)
+        st.caption(f"Ce que voit l'élève ({stt.frequency} séances par semaine), avec ses séances réalisées.")
+        ui.exports_bar(s, stt.table, sp, stt.frequency, key=f"exp_{s.id}",
+                       done={k for k, v in stt.status.items() if v}, race_time=stt.progress.race_time)
+        render(week_cards(stt.table, sp.paces, status=stt.status, race_time=stt.progress.race_time))
 
 
 def info_weeks(s: Student) -> None:
     """Semaines restantes avant la course, à titre indicatif, avec ajustement en un clic."""
-    if s.frequence_eleve and s.frequence_eleve != s.frequence_defaut:
-        st.caption(f"L'élève a choisi {s.frequence_eleve} séances par semaine.")
     if not s.date_course:
         st.caption(f"Plan de {s.plan.n_weeks} semaines, sans date de course.")
         return
@@ -251,8 +380,7 @@ def info_weeks(s: Student) -> None:
                 f"le plan en compte {s.plan.n_weeks}.")
     if left != s.plan.n_weeks:
         def adjust() -> None:
-            store = ui.app_store()
-            cur = profils.get_student(store, s.id)
+            cur = profils.get_student(ui.app_store(), s.id)
             _save_student(s.id, f"Plan ajusté à {left} semaines", plan=cur.plan.resize(left))
             ui.bump(f"plan_{s.id}")
         st.button(f"Adapter le plan à {left} semaines", key=f"fit_{s.id}_{s.plan.n_weeks}_{left}",
@@ -260,31 +388,55 @@ def info_weeks(s: Student) -> None:
 
 
 # =========================================================================== formules globales
-def render_global_ratios(distance: str) -> None:
+def render_global_formulas(distance: str) -> None:
     store = ui.app_store()
     dist = DISTANCES[distance]
     st.markdown(f"#### Formules globales {dist.label.lower()}")
-    st.caption(f"L'objectif fixe l'allure **{dist.anchor}** ({dist.label.lower()} sur {str(dist.km).replace('.', ',')} km) ; "
-               "les autres allures en découlent avec ces ratios. Ils s'appliquent aux élèves créés **à partir de "
-               "maintenant** : les plans existants gardent leurs propres formules.")
-    c_obj, _ = st.columns([1, 3])
-    sample = c_obj.text_input("Objectif d'exemple", value=dist.default_objective, key=f"sample_{distance}")
-    try:
-        seconds = parse_objective(sample, distance)
-    except ValueError as exc:
-        st.error(str(exc))
-        return
-    ratios = referentiel.load_global_ratios(store)[distance]
+    st.caption("Elles s'appliquent aux élèves créés **à partir de maintenant** : les plans existants gardent leurs "
+               "propres formules (modifiables dans la fiche de chaque élève).")
+    t_time, t_vma = st.tabs(["Objectif de temps", "VMA"], key=f"gf_{distance}")
+    with t_time:
+        st.caption(f"L'objectif fixe l'allure **{dist.anchor}** ({dist.label.lower()} sur "
+                   f"{fr_number(dist.km)} km) ; les autres allures en découlent avec ces ratios.")
+        c_obj, _ = st.columns([1, 3])
+        sample = c_obj.text_input("Objectif d'exemple", value=dist.default_objective, key=f"sample_{distance}")
+        try:
+            seconds = parse_objective(sample, distance)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            ratios = referentiel.load_global_ratios(store)[distance]
 
-    def save(r: dict) -> None:
-        referentiel.save_global_ratios(store, distance, r)
-        ui.saved("Formules globales enregistrées (nouveaux élèves)")
+            def save(r: dict) -> None:
+                referentiel.save_global_ratios(store, distance, r)
+                ui.saved("Ratios globaux enregistrés (nouveaux élèves)")
 
-    ui.ratios_editor(ratios, distance, seconds, key=f"gratios_{distance}", on_save=save)
-    render(paces_track(compute_paces(seconds, distance, ratios)))
-    if ratios != referentiel.DEFAULT_RATIOS:
-        st.button("Revenir aux valeurs de l'Excel", icon=":material/restart_alt:", key=f"gr_reset_{distance}",
-                  on_click=lambda: (save(dict(referentiel.DEFAULT_RATIOS)), ui.bump(f"gratios_{distance}")))
+            ui.ratios_editor(ratios, distance, seconds, key=f"gratios_{distance}", on_save=save)
+            render(paces_track(compute_paces(seconds, distance, ratios)))
+            if ratios != referentiel.DEFAULT_RATIOS:
+                st.button("Revenir aux valeurs de l'Excel", icon=":material/restart_alt:", key=f"gr_reset_{distance}",
+                          on_click=lambda: (save(dict(referentiel.DEFAULT_RATIOS)), ui.bump(f"gratios_{distance}")))
+    with t_vma:
+        st.caption("Chaque allure est une plage de % de VMA ; l'allure de référence est le bas de la plage, "
+                   "comme dans le plan 10 km de référence.")
+        c_v, _ = st.columns([1, 3])
+        raw = c_v.text_input("VMA d'exemple (km/h)", value=fr_number(16.0), key=f"vsample_{distance}")
+        try:
+            vma = parse_vma(raw)
+        except ValueError as exc:
+            st.error(str(exc))
+        else:
+            pct = referentiel.load_global_vma_pct(store)[distance]
+
+            def save_v(p: dict) -> None:
+                referentiel.save_global_vma_pct(store, distance, p)
+                ui.saved("% VMA globaux enregistrés (nouveaux élèves)")
+
+            ui.vma_pct_editor(pct, distance, vma, key=f"gvma_{distance}", on_save=save_v)
+            render(paces_track(compute_paces_vma(vma, distance, pct)))
+            if pct != DEFAULT_VMA_PCT:
+                st.button("Revenir aux valeurs de l'Excel", icon=":material/restart_alt:", key=f"gv_reset_{distance}",
+                          on_click=lambda: (save_v(dict(DEFAULT_VMA_PCT)), ui.bump(f"gvma_{distance}")))
 
 
 # =========================================================================== modèle de référence
@@ -301,7 +453,7 @@ def render_template(distance: str) -> None:
         st.error(str(exc))
         return
     with c_reset.popover("Réinitialiser le modèle", icon=":material/restart_alt:"):
-        st.write("Remplace ce modèle par la version d'origine (6 semaines + semaine de course).")
+        st.write("Remplace ce modèle par la version d'origine (celle des fichiers Excel de référence).")
         ok = st.checkbox("Je confirme", key=f"tr_ok_{distance}")
         if st.button("Réinitialiser", type="primary", disabled=not ok, key=f"tr_btn_{distance}"):
             referentiel.reset_template(store, distance)
@@ -313,3 +465,63 @@ def render_template(distance: str) -> None:
     ui.plan_editor(referentiel.load_template(store, distance), compute_paces(seconds, distance, ratios), seconds,
                    None, key=f"tpl_{distance}", load=lambda: referentiel.load_template(store, distance),
                    save=lambda plan, msg: (referentiel.save_template(store, distance, plan), ui.saved(msg)))
+
+
+# =========================================================================== réglages
+def render_settings() -> None:
+    store = ui.app_store()
+    c_mail, c_img = st.columns(2, gap="large")
+    with c_mail:
+        st.markdown("#### E-mails aux élèves")
+        cfg = load_email_config()
+        if cfg:
+            st.success(f"Envoi automatique activé depuis **{cfg.user}** ({cfg.host}).", icon="✉️")
+            st.caption(f"Lien mis dans les e-mails : {cfg.app_url or app_url() or '—'}")
+            with st.form("mail_test", border=True):
+                to = st.text_input("Envoyer un e-mail de test à", placeholder="ton.adresse@exemple.fr")
+                if st.form_submit_button("Envoyer le test", icon=":material/send:") and to:
+                    ok, msg = send_test_email(cfg, to.strip())
+                    (st.success if ok else st.error)(msg)
+        else:
+            st.info("L'envoi automatique n'est pas configuré : les codes s'affichent dans la fiche de chaque élève "
+                    "et tu les transmets toi-même. Pour l'activer, ajoute une section `[email]` dans les Secrets "
+                    "(adresse Gmail + mot de passe d'application) : voir le README.", icon="✉️")
+        st.markdown("#### Sauvegarde")
+        if store.mirror:
+            st.caption(f"Copie GitHub : `{store.mirror.repo}`"
+                       + (f" — erreur : {store.mirror.last_error}" if store.mirror.last_error else " — OK"))
+        else:
+            st.caption("Fichiers du serveur uniquement (pas de copie GitHub configurée).")
+        code = load_editor_code()
+        st.caption("Code coach : " + {"secrets": "défini dans les Secrets", "env": "variable d'environnement",
+                                      "demo": "code de démonstration (à changer)"}[code.source])
+
+    with c_img:
+        st.markdown("#### Visuels")
+        st.caption("Par défaut, une illustration de piste d'athlétisme. Tu peux la remplacer par tes photos "
+                   "(JPG ou PNG ; elles sont redimensionnées automatiquement).")
+        for kind, label in (("accueil", "Photo de la page d'accueil"), ("banniere", "Photo des bandeaux")):
+            with st.container(border=True, key=f"card-media-{kind}"):
+                st.markdown(f"**{label}**")
+                current = media_uri(store, kind)
+                if current:
+                    st.html(f"<img src='{current}' alt='' style='width:100%;max-height:150px;object-fit:cover;"
+                            f"border-radius:8px'>")
+                ver = ui.version(f"media_{kind}")
+                up = st.file_uploader(label, type=["jpg", "jpeg", "png", "webp"], key=f"up_{kind}_{ver}",
+                                      label_visibility="collapsed")
+                c1, c2 = st.columns(2)
+                if up is not None and c1.button("Utiliser cette photo", type="primary", key=f"use_{kind}_{ver}"):
+                    try:
+                        store.write(MEDIA_FILES[kind], prepare_photo(up.getvalue()))
+                    except Exception as exc:  # image illisible
+                        st.error(f"Image illisible : {exc}")
+                    else:
+                        ui.saved("Photo enregistrée")
+                        ui.bump(f"media_{kind}")
+                        st.rerun()
+                if current and c2.button("Revenir à l'illustration", key=f"rm_{kind}_{ver}"):
+                    store.delete(MEDIA_FILES[kind])
+                    ui.saved("Illustration par défaut rétablie")
+                    ui.bump(f"media_{kind}")
+                    st.rerun()

@@ -16,14 +16,18 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from .calculs import Pace, format_hms, format_minutes, format_pace, parse_duration_minutes, parse_km_range
-from .config import (FREQ_ALWAYS, FREQ_ONLY_4, PACE_CODES, PACE_LABELS, RACE_DAY_LABEL, SESSION_COLUMNS,
-                     SESSION_INPUT_COLUMNS, SESSION_TEXT_COLUMNS, SKELETON_WEEK, WEEK_COLUMNS)
+from .calculs import Pace, format_hms, format_minutes, parse_duration_minutes, parse_km_range
+from .config import (DAYS, FREQ_ALWAYS, FREQ_ONLY_4, PACE_CODES, PACE_LABELS, RACE_DAY_LABEL,
+                     SESSION_COLUMNS, SESSION_INPUT_COLUMNS, SESSION_TEXT_COLUMNS, SKELETON_WEEK, WEEK_COLUMNS)
 
 
 # ----------------------------------------------------------------------------
 # Normalisation des valeurs saisies
 # ----------------------------------------------------------------------------
+def _new_id() -> str:
+    return uuid.uuid4().hex[:8]
+
+
 def is_missing(value) -> bool:
     if value is None:
         return True
@@ -51,6 +55,7 @@ def clean_number(value) -> float:
 
 
 def clean_pace_code(value) -> str | None:
+    """Un code d'allure valide (Endurance, A1…) ou None. Tolère casse et libellés longs."""
     if is_missing(value):
         return None
     raw = str(value).strip()
@@ -66,6 +71,35 @@ def clean_pace_code(value) -> str | None:
     if raw.lower().startswith("sprint"):
         return "Sprint"
     return None
+
+
+def pace_codes(value) -> list[str]:
+    """Liste de codes d'allure : « A1,A3 », « A1 A2 », « A1 à A2 », ["A1", "A3"], « sprint »…"""
+    if hasattr(value, "tolist") and not isinstance(value, str):      # tableau numpy (éditeur)
+        value = value.tolist()
+    if isinstance(value, (list, tuple)):
+        items = list(value)
+    elif is_missing(value):
+        return []
+    else:
+        items = re.split(r"[,;/+\s]+|\bà\b", str(value))
+    out = []
+    for item in items:
+        code = clean_pace_code(item)
+        if code and code not in out:
+            out.append(code)
+    return out
+
+
+def clean_pace_codes(value) -> str | None:
+    """Forme stockée : codes séparés par des virgules (« A1,A3 »), ou None."""
+    codes = pace_codes(value)
+    return ",".join(codes) if codes else None
+
+
+def clean_day(value) -> str:
+    raw = clean_text(value).lower()[:3]
+    return raw if raw in DAYS else ""
 
 
 def clean_frequency(value) -> str:
@@ -84,9 +118,13 @@ def clean_sessions(df: pd.DataFrame) -> pd.DataFrame:
         elif col == "km_spe":
             out[col] = pd.Series([clean_number(v) for v in values], dtype="float64")
         elif col == "allure":
-            out[col] = pd.Series([clean_pace_code(v) for v in values], dtype=object)
+            out[col] = pd.Series([clean_pace_codes(v) for v in values], dtype=object)
         elif col == "frequence":
             out[col] = pd.Series([clean_frequency(v) for v in values], dtype=object)
+        elif col == "jour":
+            out[col] = pd.Series([clean_day(v) for v in values], dtype=object)
+    # Identifiant stable : conservé s'il existe, créé pour une nouvelle séance.
+    out["session_id"] = [sid or _new_id() for sid in out["session_id"]]
     numbers = [int(m.group(1)) for v in out["seance"] if (m := re.fullmatch(r"[sS](\d+)", v))]
     next_n = max(numbers, default=0) + 1
     for i in out.index:
@@ -105,10 +143,6 @@ def sessions_equal(a: pd.DataFrame, b: pd.DataFrame) -> bool:
     return rec(ca) == rec(cb)
 
 
-def _new_id() -> str:
-    return uuid.uuid4().hex[:8]
-
-
 def is_race_day(seance) -> bool:
     return clean_text(seance).upper().replace(" ", "") == RACE_DAY_LABEL.replace(" ", "")
 
@@ -116,8 +150,8 @@ def is_race_day(seance) -> bool:
 def is_empty_session(row) -> bool:
     """Séance sans aucun contenu (ni km, ni durée, ni contenu, ni allure)."""
     return not any([clean_text(row.get("km_env")), clean_text(row.get("duree_env")),
-                    clean_text(row.get("contenu")), clean_pace_code(row.get("allure")),
-                    not is_missing(row.get("km_spe"))])
+                    clean_text(row.get("contenu")), pace_codes(row.get("allure")),
+                    not is_missing(row.get("km_spe")), clean_text(row.get("temps_spe"))])
 
 
 # ----------------------------------------------------------------------------
@@ -153,6 +187,7 @@ class Plan:
         weeks["week_id"] = weeks["week_id"].map(mapping)
         sessions = self.sessions.copy()
         sessions["week_id"] = sessions["week_id"].map(mapping)
+        sessions["session_id"] = [_new_id() for _ in range(len(sessions))]
         return Plan(weeks, sessions).normalized()
 
     def normalized(self) -> "Plan":
@@ -235,6 +270,7 @@ class Plan:
                           ignore_index=True)
         sub = clean_sessions(sessions if isinstance(sessions, pd.DataFrame)
                              else pd.DataFrame(sessions if sessions is not None else SKELETON_WEEK))
+        sub["session_id"] = [_new_id() for _ in range(len(sub))]
         sub.insert(0, "week_id", wid)
         sub.insert(1, "ordre", range(len(sub)))
         frames = [f for f in (self.sessions, sub) if len(f)]
@@ -268,19 +304,36 @@ class Plan:
 # Tableaux calculés
 # ----------------------------------------------------------------------------
 def computed_columns(sessions: pd.DataFrame, paces: dict[str, Pace], objective_seconds: int) -> pd.DataFrame:
-    """Ajoute allure, vitesse et temps spécifique ; durée du JOUR J = objectif (E11 = D4)."""
+    """Ajoute allure(s), vitesse et temps spécifique ; durée du JOUR J = objectif (E11 = D4).
+
+    * allure_txt : allure de chaque code (« 4'57" » ou « 4'25"–4'41" / 4'10"–4'25" ») ;
+    * temps_spe_min : km spécifiques × 1re allure (colonne H du marathon : =F9*G9) ;
+    * temps_aff : temps spécifique saisi s'il existe (plan 10 km), sinon le temps calculé.
+    """
     out = sessions.copy().reset_index(drop=True)
-    pace_objs = [paces.get(code) if code else None for code in out["allure"]]
-    out["allure_txt"] = [format_pace(p.min_per_km) if p else "" for p in pace_objs]
-    out["allure_dec"] = [round(p.min_per_km, 2) if p else math.nan for p in pace_objs]
-    out["vitesse"] = [round(p.kmh, 1) if p else math.nan for p in pace_objs]
+    codes = [pace_codes(v) for v in out["allure"]]
+    first = [paces.get(c[0]) if c else None for c in codes]
+    out["allure_txt"] = [" / ".join(paces[c].pace_str for c in cs if c in paces) for cs in codes]
+    out["allure_dec"] = [round(p.min_per_km, 2) if p else math.nan for p in first]
+    out["vitesse"] = [round(p.kmh, 1) if p else math.nan for p in first]
     temps = [km * p.min_per_km if (p is not None and not is_missing(km)) else math.nan
-             for p, km in zip(pace_objs, out["km_spe"])]
+             for p, km in zip(first, out["km_spe"])]
     out["temps_spe_min"] = temps
-    out["temps_spe"] = [format_minutes(t) if not is_missing(t) else "" for t in temps]
+    saisi = out["temps_spe"] if "temps_spe" in out.columns else [""] * len(out)
+    out["temps_aff"] = [clean_text(t) or (format_minutes(m) if not is_missing(m) else "")
+                        for t, m in zip(saisi, temps)]
     out["duree_env"] = [format_hms(objective_seconds) if is_race_day(s) and not clean_text(d) else d
                         for s, d in zip(out["seance"], out["duree_env"])]
     return out
+
+
+def session_date(week_start: date | None, jour: str, seance: str, race_date: date | None) -> date | None:
+    """Date réelle d'une séance : jour de course pour le JOUR J, sinon lundi de la semaine + jour choisi."""
+    if is_race_day(seance) and race_date:
+        return race_date
+    if week_start and jour in DAYS:
+        return week_start + timedelta(days=DAYS.index(jour))
+    return None
 
 
 def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
@@ -300,6 +353,7 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
             sub = sub[[not is_empty_session(r) for _, r in sub.iterrows()]]
         sub = computed_columns(sub, paces, objective_seconds)
         start = plan.week_start(pos, race_date)
+        sub["date"] = [session_date(start, j, se, race_date) for j, se in zip(sub["jour"], sub["seance"])]
         sub.insert(0, "week_id", w["week_id"])
         sub.insert(1, "position", pos)
         sub.insert(2, "semaine", Plan.week_label(pos))

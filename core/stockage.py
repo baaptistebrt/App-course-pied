@@ -4,7 +4,9 @@ Stockage des données : fichiers Excel locaux + copie optionnelle sur GitHub.
 Organisation du dossier `data/` :
     data/formules.xlsx            ratios globaux par distance
     data/modeles/<distance>.xlsx  modèle de référence de chaque distance
-    data/eleves/<id>.xlsx         un fichier par élève (profil, formules, plan)
+    data/eleves/<id>.xlsx         un fichier par élève (profil, formules, plan) — écrit par le coach
+    data/suivi/<id>.xlsx          suivi de l'élève (séances réalisées, temps) — écrit par l'élève
+    data/medias/                  images de la page d'accueil et des bannières (facultatif)
 
 Écriture atomique (fichier temporaire puis remplacement) : un fichier n'est jamais à moitié écrit.
 
@@ -31,6 +33,8 @@ from pathlib import Path
 import pandas as pd
 
 APP_DIR = Path(__file__).resolve().parent.parent
+# Fichiers copiés depuis GitHub au démarrage : classeurs et images (page d'accueil, bannière).
+DATA_SUFFIXES = (".xlsx", ".jpg", ".jpeg", ".png", ".webp")
 DEFAULT_DATA_DIR = Path(os.environ.get("PLAN_DATA_DIR", APP_DIR / "data"))
 
 
@@ -105,7 +109,7 @@ class GitHubMirror:
                     if item.get("type") != "blob" or not item["path"].startswith(prefix):
                         continue
                     rel = item["path"][len(prefix):]
-                    if not rel.endswith(".xlsx"):
+                    if not rel.lower().endswith(DATA_SUFFIXES):
                         continue
                     blob = s.get(f"{self.api_url}/repos/{self.repo}/git/blobs/{item['sha']}", timeout=self.timeout)
                     blob.raise_for_status()
@@ -222,7 +226,7 @@ class Store:
         if self.mirror:
             self.mirror.delete(rel)
 
-    def list(self, folder: str, suffix: str = ".xlsx") -> list[str]:
+    def list(self, folder: str, suffix: str | tuple = ".xlsx") -> list[str]:
         d = self.path(folder)
         if not d.exists():
             return []

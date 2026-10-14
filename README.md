@@ -1,166 +1,150 @@
 # Coach running — plans Marathon, Semi-marathon et 10 km
 
-Application Streamlit pour un coach de course à pied :
+Application Streamlit pour un coach de course à pied.
 
-- **Le coach** (code éditeur) crée un profil par élève : e-mail, code d'accès généré
-  automatiquement, objectif, date de course facultative, 3 ou 4 séances par semaine.
-  Il ajuste le plan et les formules de chaque élève, les formules globales et les modèles
-  de référence des trois distances.
-- **L'élève** (code personnel) voit uniquement son plan, avec son dossard et ses allures.
-  Il peut choisir 3 ou 4 séances par semaine, exporter en Excel / CSV et imprimer.
+- **Page d'accueil publique** : un logo, un titre, un champ « code d'accès ». Rien d'autre n'est
+  visible sans code (pas d'accès direct au plan par un lien).
+- **Le coach** (code éditeur) crée un profil par élève avec son e-mail : le code d'accès est
+  généré et **envoyé automatiquement par e-mail**. Il calcule les allures **par objectif de temps
+  ou par VMA** (ou les deux, pour comparer), ajuste le plan, les formules, et **supervise** les
+  séances réalisées et le temps de course de chaque élève.
+- **L'élève** (son code) voit son plan, **coche chaque séance réalisée**, saisit son **temps de
+  course** le jour J, choisit 3 ou 4 séances par semaine, exporte (Excel / CSV) et imprime.
 
 ---
 
-## 1. Lancer l'application sur ton PC
+## 1. Mettre à jour l'application en ligne
+
+Ton application est déjà déployée depuis le dépôt GitHub `App-course-pied`.
+
+1. **Code** : dans le dépôt `App-course-pied`, **Add file > Upload files**, glisse tout le contenu
+   du dossier (`app.py`, `README.md`, `requirements.txt`, dossiers `core`, `ui`, `tests`), puis
+   **Commit changes**. Les fichiers existants sont remplacés ; Streamlit redémarre tout seul.
+   Le dossier `ui/assets` (illustration et logo) doit bien partir avec `ui`.
+2. **E-mails** (facultatif mais conseillé) : voir la partie 3, puis ajoute la section `[email]`
+   dans **share.streamlit.io > ⋮ > Settings > Secrets**, sous les sections existantes.
+3. **Données existantes** : elles sont reprises telles quelles. Le modèle 10 km est remplacé
+   automatiquement par celui du fichier Excel de référence (l'ancien est gardé en
+   `modeles/10k_v2.xlsx` dans le dépôt des données).
+
+## 2. Lancer sur ton PC
 
 ```
 py -V:3.13 -m pip install -r requirements.txt
 py -V:3.13 -m streamlit run app.py
 ```
 
-Les bibliothèques sont les mêmes que pour la première version : le pack hors ligne déjà
-installé suffit.
+Sans Secrets, le code coach de démonstration est `coach-2026`.
 
-Sans configuration, le **code coach de démonstration** est `coach-2026`. Pour définir le tien,
-copie `.streamlit/secrets.toml.example` en `.streamlit/secrets.toml` et remplis `editor_code`.
+## 3. Envoi des codes par e-mail (Gmail)
 
----
-
-## 2. Mettre à jour l'application en ligne (Streamlit Community Cloud)
-
-### a. Remplacer le code sur GitHub (dépôt `plan-marathon`)
-1. Supprime les anciens dossiers `marathon`, `tests` et `data` : ouvre chaque dossier,
-   menu **…** en haut à droite, puis **Delete directory** et **Commit changes**.
-2. **Add file > Upload files** : glisse `app.py`, `requirements.txt`, `README.md`, et les dossiers
-   `core`, `ui` et `tests`. Puis **Commit changes**.
-3. Le dossier `.streamlit` (couleurs et polices) ne passe souvent pas par glisser-déposer :
-   **Add file > Create new file**, nomme le fichier `.streamlit/config.toml`, colle le contenu
-   du fichier `config.toml` fourni, puis **Commit changes**.
-
-**N'envoie jamais le dossier `data`** dans ce dépôt : il contient les e-mails et les codes des élèves.
-
-### b. Créer le dépôt privé des données (une seule fois)
-Sur Streamlit Community Cloud, le disque est effacé à chaque redémarrage. L'application copie
-donc chaque modification dans un dépôt GitHub **privé** et le recharge au démarrage.
-
-1. Sur GitHub : **+ > New repository**, nom `coach-running-data`, coche **Private** et
-   **Add a README file**, puis **Create repository**.
-2. Crée une clé d'accès : photo de profil > **Settings** > **Developer settings** >
-   **Personal access tokens** > **Fine-grained tokens** > **Generate new token**.
-   - Repository access : **Only select repositories** > `coach-running-data`
-   - Permissions > Repository permissions > **Contents : Read and write**
-   - Copie le jeton (`github_pat_…`) : il ne s'affiche qu'une fois.
-
-### c. Renseigner les Secrets sur Streamlit
-share.streamlit.io > ton app > **⋮ > Settings > Secrets** :
+1. Sur ton compte Google : **Sécurité > Validation en deux étapes**, à activer.
+2. Puis https://myaccount.google.com/apppasswords : crée un mot de passe d'application
+   (nom : « Coach running »). Google affiche 16 lettres : copie-les.
+3. Ajoute dans les Secrets :
 
 ```toml
-[access]
-editor_code = "ton-code-coach"
-
-[github]
-token = "github_pat_..."
-repo = "baaptistebrt/coach-running-data"
-branch = "main"
+[email]
+user = "ton.adresse@gmail.com"
+password = "abcd efgh ijkl mnop"
+sender_name = "Baptiste, ton coach"
+app_url = "https://ton-app.streamlit.app"
 ```
 
-Enregistre : l'application redémarre. La barre latérale du coach indique
-« copie GitHub (…) » quand tout fonctionne, ou un message si la copie échoue.
-
-Les anciens secrets `user_code` ne servent plus : chaque élève a désormais son propre code.
-
----
-
-## 3. Utilisation
-
-### Coach
-- **Onglets Marathon / Semi-marathon / 10 km**, chacun avec trois vues :
-  - **Élèves** : liste, **Nouvel élève** (e-mail + code créé automatiquement), puis pour l'élève choisi :
-    code et lien direct à lui transmettre, objectif, date de course, séances par semaine,
-    nombre de semaines restantes (avec **Adapter le plan à N semaines**), plan modifiable,
-    formules propres à l'élève, aperçu de ce qu'il voit, exports et impression.
-  - **Formules** : ratios globaux de la distance. Ils s'appliquent aux élèves **créés ensuite** ;
-    les élèves existants gardent les leurs (bouton « Reprendre les formules globales » au besoin).
-  - **Modèle de référence** : plan de départ des nouveaux élèves (6 semaines + semaine de course).
-- **Lien direct** : `https://ton-app.streamlit.app/?code=XXXX-XXXX` connecte l'élève sans saisie.
-- **Actions** de l'élève : générer un nouveau code (l'ancien ne marche plus), supprimer l'élève.
-
-### Élève
-Connexion avec son code (majuscules et tirets indifférents). Il voit son dossard, ses six
-allures, son plan semaine par semaine (semaine en cours mise en évidence), choisit 3 ou 4 séances
-(les allures ne changent pas) et peut exporter en Excel / CSV ou imprimer.
+Le serveur utilisé est `smtp.gmail.com`, port 587. Pour un autre fournisseur, ajoute `host` et
+`port`. L'onglet **Réglages** permet d'envoyer un e-mail de test. Sans cette section, les codes
+s'affichent dans la fiche de l'élève et tu les transmets toi-même.
 
 ---
 
-## 4. Calculs
+## 4. Calcul des allures
 
-Reprise des formules du fichier Excel. Les ratios s'appliquent à la **vitesse** (km/h) :
+### Méthode « objectif de temps » (fichier marathon)
+Les ratios s'appliquent à la **vitesse** : Endurance = A1 × 85 %, A2 = A1 × 105 %,
+A3 = A2 × 105 %, A4 = A3 × 105 %, Sprint = A4 × 120 %. L'objectif fixe l'allure de la distance
+préparée : marathon → A1 (42,2 km), semi → A2 (21,1 km), 10 km → A3 (10 km).
 
-| Allure | Calcul (valeurs par défaut) |
-|---|---|
-| Endurance | A1 × 85 % |
-| A1 · marathon | sommet de la chaîne |
-| A2 · semi | A1 × 105 % |
-| A3 · 10 km | A2 × 105 % |
-| A4 · 5 km | A3 × 105 % |
-| Sprint | A4 × 120 % |
+### Méthode « VMA » (fichier 10 km)
+Vitesse = VMA × % : Endurance 68 %, A1 75 %, A2 80 à 85 %, A3 85 à 90 % (valeurs de l'Excel),
+A4 90 à 95 % et Sprint 100 à 105 % (valeurs usuelles, absentes de l'Excel). Chaque allure est une
+plage ; comme l'Excel, l'allure de référence est le **bas de la plage** (A2 = VMA × 80 %).
+Avec une VMA de 16 : 5'31", 5'00", 4'25"–4'41", 4'10"–4'25" (identique à l'Excel).
 
-Allure (min/km) = 60 ÷ vitesse. **L'objectif fixe l'allure de la distance préparée** :
-marathon → A1 (42,2 km, comme l'Excel), semi → A2 (21,1 km), 10 km → A3 (10 km).
-Les autres allures s'en déduisent dans les deux sens. Pour un marathon avec les ratios par
-défaut, les valeurs sont identiques à celles de l'Excel (vérifié par les tests).
+### Comparer et choisir
+Dans la fiche d'un élève, renseigne l'objectif **et** la VMA : un tableau compare les deux
+méthodes allure par allure, puis tu choisis la **méthode retenue** pour son plan. Sans objectif,
+le temps de course est estimé à partir de la VMA.
 
-- Temps spécifique d'une séance = km spécifiques × allure.
-- Séance **JOUR J** : sa durée est l'objectif.
-- Dates : la dernière semaine est celle de la course (si une date est renseignée).
-
-### Fréquence 3 ou 4 séances
-Chaque séance est marquée **Toujours** ou **Si 4 séances**. Avec 3 séances, les séances
-« Si 4 séances » sont masquées. Dans les modèles, c'est le footing d'endurance qui saute
-en priorité ; le coach peut changer ce choix séance par séance.
-
-### Modèles fournis
-- **Marathon** : semaines S1 à S7 de l'Excel (la S0 vide n'est pas reprise). Ajustements :
-  JOUR J à 42,2 km au lieu de 21,11, ligne « s1 » vide en double retirée, S5 s1 sur A3
-  comme la formule de l'Excel.
-- **Semi-marathon et 10 km** : propositions dans le même esprit (mêmes notations et allures),
-  **à relire et ajuster** dans « Modèle de référence ».
+### Formules modifiables
+Onglet de la distance > **Formules** : ratios et % de VMA globaux, appliqués aux élèves créés
+ensuite. Chaque élève a sa propre copie, modifiable dans sa fiche (« Formules de l'élève »).
 
 ---
 
-## 5. Données
+## 5. Plans
+
+- **Marathon** : semaines S1 à S7 du fichier marathon (temps spécifique calculé : km × allure).
+- **10 km** : 12 semaines du fichier « Maud_plan_10k », 3 séances par semaine, allures multiples
+  par séance (« A2 A3 »), temps spécifique saisi (« 27'30 »), JOUR J le jour de la course.
+  Quand l'Excel ne précise pas l'allure mais que le contenu la nomme (S10 à S12), elle est reprise.
+- **Semi-marathon** : proposition dans le même esprit, à ajuster.
+
+Dates : la dernière semaine est celle de la course ; chaque séance peut avoir un **jour**
+(lundi… dimanche) qui donne sa date réelle. Fréquence : chaque séance est « Toujours » ou
+« Si 4 séances ». Le coach fixe la fréquence par défaut, l'élève peut la changer.
+
+---
+
+## 6. Suivi et supervision
+
+- L'élève coche ses séances et saisit son temps le jour J. Ces informations sont rangées dans
+  `data/suivi/<id>.xlsx`, un fichier que **seul l'élève modifie** : le coach ne peut ni les
+  changer ni les effacer en modifiant le plan.
+- Le coach voit le suivi dans la fiche de l'élève (onglet **Suivi**) et pour tous les élèves dans
+  l'onglet **Supervision** (progression, dernière séance cochée, temps réalisé, écart à l'objectif).
+
+## 7. Visuels
+
+Par défaut, une illustration de virage de piste d'athlétisme. Onglet **Réglages** : importe tes
+photos pour la page d'accueil et pour les bandeaux (redimensionnées automatiquement, copiées sur
+GitHub avec les données).
+
+---
+
+## 8. Données
 
 ```
-data/formules.xlsx            ratios globaux par distance
+data/formules.xlsx            ratios et % VMA globaux par distance
 data/modeles/<distance>.xlsx  modèles de référence
-data/eleves/<id>.xlsx         un fichier par élève : profil, formules, semaines, séances
+data/eleves/<id>.xlsx         profil, méthode, formules et plan de l'élève (écrit par le coach)
+data/suivi/<id>.xlsx          séances réalisées, temps de course, fréquence (écrit par l'élève)
+data/medias/                  photos de l'accueil et des bandeaux
 ```
 
-Écriture atomique (pas de fichier à moitié écrit), rechargement automatique à l'ouverture,
-copie GitHub facultative (voir 2b).
-
----
-
-## 6. Structure du code
+## 9. Structure du code
 
 ```
-app.py              point d'entrée : connexion et aiguillage coach / élève
-core/               logique métier, sans Streamlit
-  config.py         distances, allures, ratios par défaut, couleurs de zones
-  calculs.py        conversions de temps, calcul des allures
-  modeles.py        modèles de référence des 3 distances
-  plan.py           semaines / séances, fréquence, tableaux calculés
-  referentiel.py    formules globales et modèles enregistrés
-  profils.py        élèves : création, codes, lecture, sauvegarde
-  stockage.py       fichiers locaux + copie GitHub
-  exports.py        Excel, CSV, document imprimable
-  auth.py           codes d'accès
-ui/                 interface
-  design.py         identité visuelle (piste, dossard, couloirs d'allure)
-  composants.py     éditeur de plan, éditeur de formules, exports
-  editeur.py        interface coach
-  eleve.py          interface élève
-tests/              tests (calculs vs Excel, profils, GitHub simulé)
+app.py                page d'accueil publique et aiguillage coach / élève
+core/                 logique métier, sans Streamlit
+  calculs.py          conversions, allures par objectif et par VMA
+  moteur.py           calcul double d'un élève, comparaison, méthode retenue
+  plan.py             semaines / séances (jour, allures multiples), tableaux calculés
+  modeles.py          modèles des 3 distances (dont le 10 km de l'Excel)
+  referentiel.py      formules globales, modèles enregistrés, mises à jour
+  profils.py          élèves, codes d'accès
+  suivi.py            séances réalisées, temps réalisé (côté élève)
+  emails.py           envoi du code par e-mail (SMTP)
+  stockage.py         fichiers locaux + copie GitHub
+  exports.py          Excel, CSV, document imprimable
+  auth.py             codes d'accès
+ui/                   interface
+  design.py           identité visuelle, page d'accueil, dossard, couloirs, semaines
+  composants.py       éditeur de plan, éditeurs de formules, exports
+  editeur.py          interface coach (distances, réglages)
+  supervision.py      supervision (lecture seule)
+  eleve.py            espace élève
+  assets/             illustration de piste et logo
+tests/                tests automatiques (calculs vs les deux Excel, suivi, e-mails, GitHub simulé)
 ```
 
-Tests : `py -V:3.13 -m pip install pytest`, puis `py -V:3.13 -m pytest -q`.
+Tests : `py -V:3.13 -m pip install pytest aiosmtpd`, puis `py -V:3.13 -m pytest -q`.

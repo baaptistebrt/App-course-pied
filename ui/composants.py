@@ -13,11 +13,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from core import referentiel
-from core.calculs import Pace, compute_paces, ratio_formula
-from core.config import (FREQ_ALWAYS, FREQ_LABELS, PACE_BY_CODE, PACE_CODES, PACE_LABELS,
-                         RATIO_CODES, SESSION_INPUT_COLUMNS)
+from core.calculs import Pace, compute_paces, compute_paces_vma, format_minutes, format_pct_range, ratio_formula
+from core.config import (DAY_LABELS, DAYS, FREQ_ALWAYS, FREQ_LABELS, PACE_BY_CODE, PACE_CODES, PACE_LABELS,
+                         RATIO_CODES, SESSION_INPUT_COLUMNS, ZONE_COLORS)
 from core.exports import export_csv, export_excel, fr_date, print_button_html, print_document, print_page
-from core.plan import Plan, computed_columns, sessions_equal
+from core.plan import Plan, computed_columns, pace_codes, sessions_equal
 from core.stockage import Store, get_store
 
 
@@ -64,43 +64,50 @@ def bump(key: str) -> None:
 
 
 # =========================================================================== éditeur de plan
-COMPUTED = ["allure_txt", "vitesse", "temps_spe"]
-EDITOR_ORDER = ["seance", "km_env", "duree_env", "contenu", "km_spe", "allure", "frequence", *COMPUTED, "remarque"]
+COMPUTED = ["allure_txt", "temps_auto"]
+EDITOR_ORDER = ["seance", "jour", "km_env", "duree_env", "contenu", "allure", "km_spe", "temps_spe", "frequence",
+                *COMPUTED, "remarque"]
 
 
 def column_config() -> dict:
     cc = st.column_config
     return {
-        "seance": cc.TextColumn("Séance", width=75, help="s1, s2… ou « JOUR J » (durée = objectif)"),
-        "km_env": cc.TextColumn("Km", width=70, help="Nombre ou fourchette : 12, 25 à 30"),
-        "duree_env": cc.TextColumn("Durée", width=70, help="h:mm, ex. 1:10"),
-        "contenu": cc.TextColumn("Contenu", width=250, help='Ex. : 2x2000 A1 r=1000, 8x30"/30"'),
-        "km_spe": cc.NumberColumn("Km spé.", width=70, min_value=0.0, max_value=60.0, step=0.1, format="%.1f",
-                                  help="Km courus à l'allure choisie : donne le temps spécifique"),
-        "allure": cc.SelectboxColumn("Allure", width=120, options=PACE_CODES,
-                                     format_func=lambda c: PACE_LABELS.get(c, c),
-                                     help="L'allure se calcule selon l'objectif et les formules de l'élève"),
+        "seance": cc.TextColumn("Séance", width=72, help="s1, s2… ou « JOUR J » (durée = objectif)"),
+        "jour": cc.SelectboxColumn("Jour", width=92, options=DAYS, format_func=lambda d: DAY_LABELS.get(d, d),
+                                   help="Facultatif : donne la date réelle de la séance"),
+        "km_env": cc.TextColumn("Km", width=62, help="Nombre ou fourchette : 12, 25 à 30"),
+        "duree_env": cc.TextColumn("Durée", width=66, help="h:mm, ex. 1:10"),
+        "contenu": cc.TextColumn("Contenu", width=230, help='Ex. : 2x2000 A1 r=1000, 8x30"/30"'),
+        "allure": cc.MultiselectColumn("Allure(s)", width=170, options=PACE_CODES,
+                                       format_func=lambda c: PACE_LABELS.get(c, c),
+                                       color=[ZONE_COLORS[c][0] for c in PACE_CODES],
+                                       help="Une ou plusieurs allures ; elles se calculent selon la méthode de l'élève"),
+        "km_spe": cc.NumberColumn("Km spé.", width=66, min_value=0.0, max_value=60.0, step=0.1, format="%.1f",
+                                  help="Km à la 1re allure : le temps spécifique est alors calculé"),
+        "temps_spe": cc.TextColumn("Temps spé.", width=78,
+                                   help="Saisi à la main (ex. 27'30). Laisse vide pour le calcul automatique"),
         "frequence": cc.SelectboxColumn("Fréquence", width=105, options=list(FREQ_LABELS), required=True,
                                         default=FREQ_ALWAYS, format_func=lambda f: FREQ_LABELS.get(f, f),
                                         help="« Si 4 séances » : séance retirée quand l'élève s'entraîne 3 fois"),
-        "allure_txt": cc.TextColumn("/km", width=62, disabled=True),
-        "vitesse": cc.NumberColumn("km/h", width=58, format="%.1f", disabled=True),
-        "temps_spe": cc.TextColumn("Temps spé.", width=78, disabled=True),
-        "remarque": cc.TextColumn("Remarque", width=200),
+        "allure_txt": cc.TextColumn("/km", width=110, disabled=True),
+        "temps_auto": cc.TextColumn("Calculé", width=66, disabled=True,
+                                    help="Km spé. × allure (utilisé si « Temps spé. » est vide)"),
+        "remarque": cc.TextColumn("Remarque", width=190),
     }
 
 
 def editor_frame(sessions: pd.DataFrame, paces: dict[str, Pace], seconds: int) -> pd.DataFrame:
     comp = computed_columns(sessions, paces, seconds)
     view = sessions.copy()
-    for col in COMPUTED:
-        view[col] = comp[col]
-    for col in ("seance", "km_env", "duree_env", "contenu", "remarque", "allure_txt", "temps_spe", "allure",
-                "frequence"):
+    view["allure_txt"] = comp["allure_txt"]
+    view["temps_auto"] = [format_minutes(m) for m in comp["temps_spe_min"]]
+    for col in ("session_id", "seance", "jour", "km_env", "duree_env", "contenu", "temps_spe", "remarque",
+                "allure_txt", "temps_auto", "frequence"):
         view[col] = view[col].astype(object)
+    view["jour"] = [d or None for d in view["jour"]]
+    view["allure"] = pd.Series([pace_codes(v) for v in view["allure"]], dtype=object)
     view["km_spe"] = view["km_spe"].astype("float64")
-    view["vitesse"] = view["vitesse"].astype("float64")
-    return view[EDITOR_ORDER]
+    return view[["session_id", *EDITOR_ORDER]]
 
 
 def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: date | None, key: str,
@@ -159,7 +166,7 @@ def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: dat
             view = editor_frame(plan.sessions_of(wid), paces, seconds)
             edited = st.data_editor(view, key=f"ed_{key}_{wid}_{ver}_{seconds}", num_rows="dynamic",
                                     hide_index=True, width="stretch", column_config=column_config(),
-                                    disabled=COMPUTED, placeholder="")
+                                    column_order=EDITOR_ORDER, disabled=COMPUTED, placeholder="")
             if not sessions_equal(edited[SESSION_INPUT_COLUMNS], view[SESSION_INPUT_COLUMNS]):
                 save(load().replace_week_sessions(wid, edited[SESSION_INPUT_COLUMNS]),
                      f"{Plan.week_label(pos)} enregistrée")
@@ -192,19 +199,47 @@ def ratios_editor(ratios: dict[str, float], distance: str, objective_seconds: in
         st.rerun()
 
 
+def vma_pct_editor(pct: dict, distance: str, vma: float, key: str, on_save: Callable[[dict], None]) -> None:
+    """Plages de % de VMA par allure, avec l'allure obtenue pour la VMA indiquée."""
+    ver = version(key)
+    paces = compute_paces_vma(vma, distance, pct)
+    df = pd.DataFrame([{"code": c, "Allure": PACE_LABELS[c], "% min": float(pct[c][0]), "% max": float(pct[c][1]),
+                        "Plage": format_pct_range(*pct[c]), "Résultat": f"{paces[c].pace_str} /km"}
+                       for c in PACE_CODES])
+    num = lambda label: st.column_config.NumberColumn(label, min_value=30.0, max_value=140.0, step=0.5,  # noqa: E731
+                                                      format="%.1f %%", required=True)
+    edited = st.data_editor(
+        df, key=f"vma_{key}_{ver}_{vma}", hide_index=True, width="stretch",
+        disabled=["Allure", "Plage", "Résultat"], column_order=["Allure", "% min", "% max", "Plage", "Résultat"],
+        column_config={"% min": num("% VMA min"), "% max": num("% VMA max")})
+    new = {r["code"]: (float(r["% min"]), float(r["% max"])) for _, r in edited.iterrows()}
+    if any(tuple(map(float, pct[c])) != new[c] for c in PACE_CODES):
+        on_save(new)
+        bump(key)
+        st.rerun()
+
+
 # =========================================================================== exports
-def exports_bar(student, table: pd.DataFrame, paces: dict[str, Pace], seconds: int, key: str) -> None:
+def exports_bar(student, table: pd.DataFrame, sp, frequency: int, key: str, done: set[str] | None = None,
+                race_time: str = "") -> None:
     """Boutons d'export Excel / CSV et d'impression du plan affiché."""
     stem = f"plan_{student.distance}_{student.display_name}".replace(" ", "_")
-    doc = print_document(student, table, paces, seconds)
+    doc = print_document(student, table, sp, frequency, done, race_time)
     with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="right", gap="small"):
         components.html(print_button_html(doc), height=44, width=185)
-        st.download_button("Excel", export_excel(student, table, paces, seconds), file_name=f"{stem}.xlsx",
-                           icon=":material/download:", key=f"xl_{key}", on_click="ignore",
+        st.download_button("Excel", export_excel(student, table, sp, frequency, done, race_time),
+                           file_name=f"{stem}.xlsx", icon=":material/download:", key=f"xl_{key}", on_click="ignore",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.download_button("CSV", export_csv(table), file_name=f"{stem}.csv", mime="text/csv",
+        st.download_button("CSV", export_csv(table, done), file_name=f"{stem}.csv", mime="text/csv",
                            icon=":material/download:", key=f"csv_{key}", on_click="ignore")
         st.download_button("Page imprimable", print_page(doc, f"Plan de {student.display_name}"),
                            file_name=f"{stem}.html", mime="text/html", icon=":material/description:",
                            key=f"html_{key}", on_click="ignore",
                            help="Page à ouvrir dans le navigateur puis à imprimer, si le bouton Imprimer est bloqué")
+
+
+def basis_text(sp, student) -> str:
+    """Phrase qui rappelle sur quoi reposent les allures."""
+    if sp.method == "vma":
+        return f"Allures calculées sur ta VMA de {str(student.vma).replace('.', ',').rstrip('0').rstrip(',')} km/h"
+    return "Allures calculées sur ton objectif de temps"

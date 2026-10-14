@@ -4,8 +4,11 @@ Modèles de référence (6 semaines d'entraînement + semaine de course) pour ch
 * Marathon : transcription du fichier Excel (semaines S1 à S7 ; la S0 vide n'est pas reprise).
   La colonne « tps k » de l'Excel donne le type d'allure : =N5 Endurance, =N6/F4 A1, =N7 A2,
   =N8 A3, =N9 A4, =N10 Sprint.
-* Semi-marathon et 10 km : propositions construites dans le même esprit (mêmes notations,
-  mêmes allures), à ajuster par le coach dans l'onglet « Modèle de référence ».
+* 10 km : transcription du fichier « Maud_plan_10k_29_11_26.xlsx » (12 semaines, 3 séances,
+  allures en % de VMA). Colonnes : km env. (D), durée (E), contenu (F), allure(s) (G, ex. « A2 A3 »,
+  « sprint »), temps spécifique saisi (H, ex. « 27'30 »). Quand la colonne G est vide mais que le
+  contenu nomme une allure (S10 à S12), l'allure est reprise du contenu.
+* Semi-marathon : proposition construite dans le même esprit, à ajuster par le coach.
 
 Fréquence : chaque séance est marquée « 3-4 » (faite dans tous les cas) ou « 4 » (faite
 seulement quand l'élève s'entraîne 4 fois par semaine). Avec 3 séances, on garde la qualité
@@ -20,9 +23,10 @@ TAPER = "Affûtage : assimilation / récupération / refaire du jus !"
 
 
 def _s(seance, km_env="", duree_env="", contenu="", allure=None, km_spe=None,
-       frequence=FREQ_ALWAYS, remarque=""):
+       frequence=FREQ_ALWAYS, remarque="", temps_spe="", jour=""):
     return {"seance": seance, "km_env": km_env, "duree_env": duree_env, "contenu": contenu,
-            "km_spe": km_spe, "allure": allure, "frequence": frequence, "remarque": remarque}
+            "km_spe": km_spe, "temps_spe": temps_spe, "allure": allure, "frequence": frequence,
+            "remarque": remarque, "jour": jour}
 
 
 ONLY4 = FREQ_ONLY_4
@@ -120,47 +124,72 @@ SEMI: list[dict] = [
     ]},
 ]
 
-# --------------------------------------------------------------------------- 10 km
+# --------------------------------------------------------------------------- 10 km (Excel de référence)
+def _t(seance, km, duree, contenu, allure, temps, remarque=""):
+    """Séance du plan 10 km : temps spécifique saisi (colonne H de l'Excel)."""
+    return _s(seance, km, duree, contenu, allure, temps_spe=temps, remarque=remarque)
+
+
 TEN_K: list[dict] = [
-    {"phase": "Développement", "sessions": [
-        _s("s1", "8", "0:50", '2x(8x30"/30")', "Sprint"),
-        _s("s2", "9", "0:50", "5x1000 A3 r=1'30", "A3"),
-        _s("s3", "7", "0:45", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "12", "1:10", "end dont 2x2000 A1", "A1"),
+    {"phase": "", "sessions": [                                            # S1 (13/07), lignes 54-56
+        _t("s1", "8", "0:50", '6x30"/30"', "Sprint", "6'"),
+        _t("s2", "8", "0:50", "2x1000 (r=500m)", "A2", "12'30"),
+        _t("s3", "9", "1:00", "5000", "A1", "32'"),
     ]},
-    {"phase": "Développement", "sessions": [
-        _s("s1", "9", "0:55", "10x400 A4 r=1'", "A4"),
-        _s("s2", "10", "0:55", "3x2000 A3 r=2'", "A3"),
-        _s("s3", "7", "0:45", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "13", "1:15", "end dont 3000 A2", "A2"),
+    {"phase": "", "sessions": [                                            # S2 (20/07), lignes 50-52
+        _t("s1", "8", "0:50", '8x30"/30"', "Sprint", "8'"),
+        _t("s2", "8", "0:50", "2x1500 (r=600m)", "A2", "19'"),
+        _t("s3", "", "1:00", "5000", "A1", "32'"),
     ]},
-    {"phase": "Spécifique", "sessions": [
-        _s("s1", "9", "0:55", '3x(6x30"/30")', "Sprint"),
-        _s("s2", "10", "0:55", "6x1000 A3 r=1'", "A3"),
-        _s("s3", "8", "0:50", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "14", "1:20", "end dont 2x3000 A2", "A2"),
+    {"phase": "", "sessions": [                                            # S3 (27/07), lignes 46-48
+        _t("s1", "8", "0:50", '10x30"/30"', "Sprint", "10'"),
+        _t("s2", "9", "0:55", "3x1000 (le 3è kilo A3)", "A2,A3", "18'"),
+        _t("s3", "9.5", "1:00", "5000 dont 1000A2", "A1,A2", "32'"),
     ]},
-    {"phase": "Spécifique", "sessions": [
-        _s("s1", "10", "1:00", "12x400 A4 r=1'", "A4"),
-        _s("s2", "11", "1:00", "2x3000 A3 r=3'", "A3"),
-        _s("s3", "8", "0:50", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "15", "1:25", "end dont 4000 A2", "A2"),
+    {"phase": "", "sessions": [                                            # S4 (03/08), lignes 42-44
+        _t("s1", "8", "0:50", '2x(6x30"/30") r=3\'', "Sprint", "16'"),
+        _t("s2", "9", "0:55", "3x1000 (le 2è & 3è kilo A3)", "A2,A3", "17'"),
+        _t("s3", "9.5", "1:00", "5000 dont 2x1000 A2", "A1,A2", "31'"),
     ]},
-    {"phase": "Spécifique", "sessions": [
-        _s("s1", "9", "0:55", "8x500 A4 r=1'", "A4"),
-        _s("s2", "10", "0:55", "5x1000 A3 r=1'", "A3"),
-        _s("s3", "7", "0:45", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "13", "1:15", "end dont 2x2000 A2", "A2"),
+    {"phase": "", "sessions": [                                            # S5 (10/08), lignes 38-40
+        _t("s1", "8", "0:50", '2x(8x30"/30") r=3\'', "Sprint", "16'"),
+        _t("s2", "9", "0:55", "2000 A2 + 2000 A3 (r=1000)", "A2,A3", "30'"),
+        _t("s3", "", "1:10", "2x1000 r=4'", "A3", "16'"),
     ]},
-    {"phase": TAPER, "sessions": [
-        _s("s1", "8", "0:45", '2x(6x30"/30")', "Sprint"),
-        _s("s2", "8", "0:45", "3x1000 A3 r=1'30", "A3"),
-        _s("s3", "6", "0:40", "end", "Endurance", frequence=ONLY4),
-        _s("s4", "10", "1:00", "end", "Endurance"),
+    {"phase": "", "sessions": [                                            # S6 (17/08), lignes 34-36
+        _t("s1", "8.5", "0:50", '2x(10x30"/30") r=3\'', "Sprint", "20'"),
+        _t("s2", "10", "1:00", "2000 A2 + 2000 A3 +1000 A2 r=4'", "A2,A3", "30'"),
+        _t("s3", "11", "1:10", "30' progressif 6'15 à 5'45", "A2,A3", "30'"),
     ]},
-    {"phase": TAPER, "sessions": [
-        _s("s1", "7", "0:40", "end dont 3x500 A3", "A3", km_spe=1.5),
-        _s("s2", "5", "0:30", "end + 4 lignes droites", "Endurance", frequence=ONLY4),
+    {"phase": "", "sessions": [                                            # S7 (24/08), lignes 30-32
+        _t("s1", "9", "0:50", "3x3' A3 r=2'", "A3", "9'"),
+        _t("s2", "10", "1:00", "2x3000 en 17' (r=4')", "A3", "34'"),
+        _t("s3", "11", "1:10", "45' a1 a2 dont 10' A3", "A3", "10'"),
+    ]},
+    {"phase": "Endurance", "sessions": [                                   # S8 (31/08), lignes 26-28
+        _t("s1", "9", "0:50", "3x3' A3 r=2'", "A3", "9'"),
+        _t("s2", "10", "", "40' progressives de 6'30 à 5'45\"", "A2,A3", "40'",
+           remarque="Si difficile, endurance seulement"),
+        _t("s3", "11", "", "5000 A3", "A3", "27'30"),
+    ]},
+    {"phase": "Endurance", "sessions": [                                   # S9 (07/09), lignes 22-24
+        _t("s1", "8", "0:50", "30' A1", "A1", "30'"),
+        _t("s2", "8", "0:50", "20' A1 + 10' A2", "A1,A2", "30'"),
+        _t("s3", "8", "0:50", "15' A1 + 15' A2", "A1,A2", "30'"),
+    ]},
+    {"phase": "Endurance", "sessions": [                                   # S10 (14/09), lignes 17-20
+        _t("s1", "", "", "5x3'", None, ""),
+        _t("s2", "", "", "8x4'", None, ""),
+        _t("s3", "", "", "1h dt 20' A3", "A3", ""),
+    ]},
+    {"phase": TAPER, "sessions": [                                         # S11 (21/09), lignes 13-15
+        _t("s1", "", "", "6x3'", None, ""),
+        _t("s2", "", "", "A1", "A1", ""),
+        _t("s3", "", "", "60' progressives A1 à A3", "A1,A3", ""),
+    ]},
+    {"phase": TAPER, "sessions": [                                         # S12 (28/09) course, lignes 9-11
+        _t("s1", "", "0:45", "A1 + étirements", "A1", ""),
+        _t("s2", "", "", "", None, ""),
         _s(RACE_DAY_LABEL, "10", "", "10 km", "A3", km_spe=10.0,
            remarque="Durée = objectif (calculée automatiquement)"),
     ]},
