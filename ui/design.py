@@ -1,5 +1,5 @@
 """
-Identité visuelle « piste d'athlétisme » : CSS global, page d'accueil, bandeaux, tour de piste de l'élève,
+Identité visuelle « piste d'athlétisme » : CSS global, page d'accueil, bandeaux, dossard et tour de piste de l'élève,
 couloirs d'allure et cartes de semaines.
 
 Palette
@@ -136,6 +136,23 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .pace.anchor .v { color: var(--chrono); }
 .basis { color: #D6E2F0; font-size: .9rem; margin: 0 0 6px; }
 
+/* ---- Dossard (espace élève) ---------------------------------------------------------- */
+.bib { position: relative; background: #fff; color: var(--night); border-radius: 6px; padding: 0 0 14px;
+       box-shadow: 0 10px 24px rgba(5,20,40,.35); text-align: center; transform: rotate(-1.2deg); }
+.bib .band { background: var(--chrono); color: var(--night); font-family: var(--cond); font-weight: 700;
+             font-size: 1rem; padding: 7px 34px; border-radius: 6px 6px 0 0; }
+.bib .num { font-family: var(--cond); font-weight: 800; font-size: clamp(2.8rem, 5.2vw, 4.2rem); line-height: .95;
+            letter-spacing: -.01em; margin: 14px 10px 2px; font-variant-numeric: tabular-nums; }
+.bib .est { color: var(--muted); font-size: .85rem; margin-top: -2px; }
+.bib .who { font-family: var(--cond); font-weight: 700; font-size: 1.45rem; }
+.bib .when { color: var(--muted); font-size: .92rem; margin: 2px 12px 0; }
+.bib .done { margin: 8px 16px 0; background: #E7F6EF; color: #17603F; border-radius: 6px; padding: 4px 8px;
+             font-weight: 600; font-size: .92rem; }
+.bib .pin { position: absolute; width: 11px; height: 11px; border-radius: 50%; background: var(--concrete);
+            box-shadow: inset 0 1px 2px rgba(0,0,0,.35); }
+.bib .pin.tl { top: 40px; left: 10px; } .bib .pin.tr { top: 40px; right: 10px; }
+.bib .pin.bl { bottom: 10px; left: 10px; } .bib .pin.br { bottom: 10px; right: 10px; }
+
 /* ---- Semaines ------------------------------------------------------------------------ */
 .week, [class*="st-key-card-wk"], [class*="st-key-"][class*="-card-wk"] { background: #fff; border-radius: 12px; margin: 0 0 14px;
          border-left: 6px solid var(--track); padding: 14px 18px 8px; }
@@ -171,8 +188,12 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .progressline { display: flex; justify-content: space-between; color: var(--muted); font-size: .92rem; margin-top: 2px; }
 
 /* ---- Espace élève : tour de piste, prochaine séance, ressenti, carnet ------------------ */
-.lap { display: grid; grid-template-columns: minmax(250px, 370px) 1fr; gap: 12px 30px; align-items: center; }
-.lap .oval { position: relative; }
+.lap { display: grid; grid-template-columns: 1fr 1fr; grid-template-areas: "bib oval" "text text";
+       gap: 18px 28px; align-items: center; }
+.lap .bibcol { grid-area: bib; width: 100%; max-width: 300px; justify-self: center; }
+.lap .txt { grid-area: text; display: flex; flex-wrap: wrap; align-items: flex-end; gap: 12px 36px; }
+.lap .msg { flex: 1 1 340px; }
+.lap .oval { grid-area: oval; position: relative; width: 100%; max-width: 390px; justify-self: center; }
 .lap .oval img { width: 100%; height: auto; display: block; }
 .lap .center { position: absolute; inset: 0; display: grid; place-content: center; text-align: center; }
 .lap .big { font-family: var(--cond); font-weight: 800; font-size: clamp(2.5rem, 7vw, 3.4rem); line-height: .9;
@@ -181,8 +202,9 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .lap .hi { color: #D6E2F0; font-size: 1.05rem; margin: 0 0 2px; }
 .lap h2 { color: #fff; font-family: var(--cond); font-weight: 800; font-size: clamp(1.9rem, 4.2vw, 2.7rem);
           line-height: 1; margin: 0 0 8px; padding: 0; }
-.lap p { color: #D6E2F0; margin: 0 0 16px; max-width: 44ch; }
-.stats { display: flex; flex-wrap: wrap; gap: 10px 26px; border-top: 2px solid rgba(255,255,255,.55); padding-top: 10px; }
+.lap p { color: #D6E2F0; margin: 0; max-width: 58ch; }
+.stats { display: flex; flex-wrap: wrap; gap: 10px 26px; border-top: 2px solid rgba(255,255,255,.55); padding-top: 10px;
+         flex: 0 1 auto; }
 .stat { color: #D6E2F0; font-size: .9rem; }
 .stat b { display: block; font-family: var(--cond); color: #fff; font-size: 1.65rem; font-weight: 700; line-height: 1;
           font-variant-numeric: tabular-nums; }
@@ -230,6 +252,23 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 [class*="st-key-"][class*="card-feel"] [data-testid="stForm"] { background: transparent; padding: 0; }
 .preview-note { background: var(--night); color: #E6EDF5; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
 
+@media (max-width: 560px) {
+  .lap { gap: 14px 12px; }
+  .lap .stats { flex: 1 1 100%; }
+  .lap .big { font-size: 1.7rem; }
+  .lap .small { font-size: .7rem; margin-top: 2px; }
+  .bib .band { font-size: .85rem; padding: 5px 20px; }
+  .bib .num { font-size: 2.3rem; margin: 10px 6px 2px; }
+  .bib .who { font-size: 1.12rem; }
+  .bib .when, .bib .est, .bib .done { font-size: .74rem; }
+  .bib .pin.tl, .bib .pin.tr { top: 32px; }
+  .bib .pin { width: 8px; height: 8px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .bib { animation: pinned .5s ease-out both; }
+  @keyframes pinned { from { transform: rotate(-6deg) translateY(-8px); opacity: 0; }
+                      to { transform: rotate(-1.2deg); opacity: 1; } }
+}
 @media (max-width: 760px) {
   .pace { grid-template-columns: 30px 1fr auto; }
   .pace .kmh, .pace .eq { display: none; }
@@ -239,8 +278,6 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
   .track { padding: 18px 16px; }
   .sesmeta { margin-left: 0; }
   .sesmeta .pills { justify-content: flex-start; }
-  .lap { grid-template-columns: 1fr; }
-  .lap .oval { max-width: 380px; width: 100%; margin: 0 auto; }
   .log li { grid-template-columns: 1fr; gap: 2px; }
   [class*="st-key-"][class*="card-next"] { padding: 14px 14px 16px; }
 }
@@ -449,14 +486,35 @@ def lap_svg(p: float, n_weeks: int, p_from: float | None = None) -> str:
     return f"data:image/svg+xml;base64,{base64.b64encode(svg.encode()).decode()}"
 
 
-def lap_hero(*, hello: str, title: str, text: str, big: str, small: str, stats: list[tuple[str, str, bool]],
-             p: float, n_weeks: int, p_from: float | None, label: str) -> str:
-    """Bandeau de l'élève : tour de piste (progression) + message + chiffres clés."""
+def bib(name: str, distance: str, race_seconds: int, estimate: bool, race_date: date | None, n_weeks: int,
+        race_time: str = "") -> str:
+    """Dossard de l'élève : distance (bande jaune), objectif, prénom, date de la course."""
+    dist = DISTANCES[distance]
+    if race_date:
+        days = (race_date - date.today()).days
+        when = (f"Course le {fr_date(race_date, True)}" +
+                (f", dans {days} jour{'s' if days > 1 else ''}" if days > 0 else
+                 (", c'est aujourd'hui !" if days == 0 else "")))
+    else:
+        when = f"Plan de {n_weeks} semaines"
+    done = f"<div class='done'>Réalisé en {e(race_time)}</div>" if race_time else ""
+    return (f"<div class='bib' role='img' aria-label='Dossard : {e(name)}, objectif {e(format_race_time(race_seconds))}'>"
+            f"<span class='pin tl'></span><span class='pin tr'></span><span class='pin bl'></span><span class='pin br'></span>"
+            f"<div class='band'>{e(dist.label)}</div>"
+            f"<div class='num'>{e(format_race_time(race_seconds))}</div>"
+            f"{'<div class=est>temps estimé d’après ta VMA</div>' if estimate else ''}"
+            f"<div class='who'>{e(name)}</div><div class='when'>{e(when)}</div>{done}</div>")
+
+
+def lap_hero(*, bib_html: str, hello: str, title: str, text: str, big: str, small: str,
+             stats: list[tuple[str, str, bool]], p: float, n_weeks: int, p_from: float | None, label: str) -> str:
+    """Bandeau de l'élève : dossard, tour de piste (progression), message et chiffres clés."""
     items = "".join(f"<div class='stat{' goal' if goal else ''}'><b>{e(v)}</b>{e(k)}</div>" for k, v, goal in stats)
     return (f"<div class='track'><div class='lap'>"
+            f"<div class='bibcol'>{bib_html}</div>"
             f"<div class='oval'><img src='{lap_svg(p, n_weeks, p_from)}' alt='{e(label)}'>"
             f"<div class='center'><div class='big'>{e(big)}</div><div class='small'>{e(small)}</div></div></div>"
-            f"<div><div class='hi'>{e(hello)}</div><h2>{e(title)}</h2><p>{e(text)}</p>"
+            f"<div class='txt'><div class='msg'><div class='hi'>{e(hello)}</div><h2>{e(title)}</h2><p>{e(text)}</p></div>"
             f"<div class='stats'>{items}</div></div></div></div>")
 
 

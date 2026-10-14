@@ -15,18 +15,17 @@ dans le plan lui-même.
 from __future__ import annotations
 
 import re
-from datetime import date, timedelta
+from datetime import date
 
 import streamlit as st
 
 from core import profils, suivi
-from core.calculs import format_race_time
 from core.config import COMMENT_MAX, DISTANCES, FEELINGS, FREQUENCIES
 from core.exports import fr_date
 from core.plan import is_race_day
 from ui import composants as ui
 from ui import supervision
-from ui.design import (journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
+from ui.design import (bib, journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
                        render, session_meta, session_title, week_brief, week_header)
 
 FEEL_OPTIONS = list(FEELINGS)
@@ -177,20 +176,15 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     if pr.race_time:
         title, text = f"{DISTANCES[s.distance].label} bouclé en {pr.race_time}", \
             "Bravo ! Raconte ta course à ton coach dans la carte ci-dessous."
-        big, small = pr.race_time, "ton chrono"
     elif days_left == 0:
         title, text = "C'est le jour J", f"Ton allure de course : {race_pace} au km. Profite de chaque kilomètre."
-        big, small = "Jour J", f"ton {dist_name}"
     elif days_left is not None and days_left < 0:
         title, text = "Alors, cette course ?", "Note ton chrono et ton ressenti dans la carte ci-dessous."
-        big, small = f"{pct} %", "des séances faites"
     elif dated and first_start and today < first_start:
         title = f"Départ le {fr_date(first_start, weekday=True)}"
         text = f"{n_weeks} semaines pour préparer ton {dist_name}. Ta première séance est juste en dessous."
-        big, small = (f"J-{days_left}", f"avant ton {dist_name}") if days_left else (f"{n_weeks}", "semaines de plan")
     elif current is not None and current == positions[-1]:
         title, text = "Semaine de course", "Le plus dur est fait. Reste léger et fais-toi confiance."
-        big, small = (f"J-{days_left}", f"avant ton {dist_name}") if days_left else ("S" + str(current + 1), "")
     else:
         plural = "s" if pr.done > 1 else ""
         if current is not None:
@@ -205,17 +199,27 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             title = "C'est parti !"
             text = (f"{n_weeks} semaines pour préparer ton {dist_name}. Le point jaune avancera à chaque séance "
                     "cochée, jusqu'à la ligne d'arrivée.")
-        big, small = (f"J-{days_left}", f"avant ton {dist_name}") if days_left else (f"{pct} %", "de ton plan")
-    goal_label = "objectif" if s.objectif else "temps estimé"
-    stats = [(goal_label, format_race_time(sp.race_seconds), True), ("km courus", _km(pr.km_done), False),
-             ("séances faites", f"{pr.done}/{pr.total}", False)]
+    # Centre du tour de piste : la progression (le compte à rebours est sur le dossard)
+    if pr.race_time:
+        big, small = "Arrivée", "tour bouclé"
+    elif days_left == 0:
+        big, small = "Jour J", "dernière ligne droite"
+    else:
+        big, small = f"{pct} %", "du plan réalisé"
+    stats = [("km courus", _km(pr.km_done), False), ("séances faites", f"{pr.done}/{pr.total}", False)]
+    if current is not None:
+        week = table[table["position"] == current]
+        n_week_done = sum(1 for _, r in week.iterrows() if suivi.is_done(r, sv))
+        stats.append(("cette semaine", f"{n_week_done}/{len(week)}", True))
     p = 1.0 if pr.race_time else pr.ratio
     p_from = st.session_state.get(k("lap"), 0.0)
     st.session_state[k("lap")] = p
     if readonly:
         render(preview_note(s.display_name))
-    render(lap_hero(hello=hello, title=title, text=text, big=big, small=small, stats=stats, p=p, n_weeks=n_weeks,
-                    p_from=p_from, label=f"Tour de piste : {pct} % des séances faites"))
+    bib_html = bib(s.display_name, s.distance, sp.race_seconds, sp.race_is_estimate, s.date_course, n_weeks,
+                   pr.race_time)
+    render(lap_hero(bib_html=bib_html, hello=hello, title=title, text=text, big=big, small=small, stats=stats, p=p,
+                    n_weeks=n_weeks, p_from=p_from, label=f"Tour de piste : {pct} % des séances faites"))
 
     if table.empty:
         render("<div class='empty'>Ton plan ne contient encore aucune séance : ton coach le prépare.</div>")

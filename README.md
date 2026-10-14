@@ -99,9 +99,11 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
 
 ## 6. Espace élève
 
+- **Dossard** (en haut à gauche) : distance sur la bande jaune, objectif, prénom, date de la course et
+  jours restants, puis le temps réalisé.
 - **Tour de piste** : toute la préparation est un tour de piste ; le tracé jaune avance à chaque
-  séance cochée jusqu'à la ligne d'arrivée. Au centre, le compte à rebours (J-46), puis « Jour J »,
-  puis le chrono réalisé. À côté : la semaine en cours, l'objectif, les km courus, les séances faites.
+  séance cochée jusqu'à la ligne d'arrivée (au centre : le % du plan réalisé, « Jour J », puis
+  « Arrivée »). En dessous : la semaine en cours, les km courus, les séances faites, celles de la semaine.
 - **Ta prochaine séance** : contenu, km, durée, allures en grand, bouton « C'est fait ! ». Les séances
   oubliées des semaines passées ne bloquent pas : on passe à la semaine en cours.
 - **Ressenti** : après une séance cochée, une carte demande « comment tu l'as sentie ? »
