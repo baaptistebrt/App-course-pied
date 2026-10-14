@@ -26,7 +26,7 @@ from .calculs import clean_ratios, clean_vma_pct, normalize_objective, parse_vma
 from .config import DISTANCES, FREQUENCIES, METHODS, PACE_CODES, RATIO_CODES
 from .plan import Plan
 from .referentiel import (load_global_ratios, load_global_vma_pct, load_template, plan_from_sheets,
-                          plan_to_sheets)
+                          plan_to_sheets, vma_pct_value)
 from .stockage import Store, read_workbook, write_workbook
 
 STUDENTS_DIR = "eleves"
@@ -141,8 +141,7 @@ def student_from_bytes(content: bytes) -> Student:
         ratios = {r["allure"]: r["pourcentage"] for _, r in sheets["formules"].iterrows() if r["allure"] in RATIO_CODES}
     vma_pct = {}
     if "vma" in sheets:
-        vma_pct = {r["allure"]: (r["pct_min"], r["pct_max"]) for _, r in sheets["vma"].iterrows()
-                   if r["allure"] in PACE_CODES}
+        vma_pct = {r["allure"]: vma_pct_value(r) for _, r in sheets["vma"].iterrows() if r["allure"] in PACE_CODES}
     freq_def = _to_int(p.get("frequence_defaut"), 4)
     freq_el = _to_int(p.get("frequence_eleve"))
     try:

@@ -221,16 +221,17 @@ def vma_pct_editor(pct: dict, distance: str, vma: float, key: str, on_save: Call
 
 # =========================================================================== exports
 def exports_bar(student, table: pd.DataFrame, sp, frequency: int, key: str, done: set[str] | None = None,
-                race_time: str = "") -> None:
-    """Boutons d'export Excel / CSV et d'impression du plan affiché."""
+                race_time: str = "", notes: dict | None = None, vertical: bool = False) -> None:
+    """Boutons d'export Excel / CSV et d'impression du plan affiché (en colonne : vertical=True)."""
     stem = f"plan_{student.distance}_{student.display_name}".replace(" ", "_")
-    doc = print_document(student, table, sp, frequency, done, race_time)
-    with st.container(horizontal=True, vertical_alignment="center", horizontal_alignment="right", gap="small"):
-        components.html(print_button_html(doc), height=44, width=185)
-        st.download_button("Excel", export_excel(student, table, sp, frequency, done, race_time),
+    doc = print_document(student, table, sp, frequency, done, race_time, notes)
+    with st.container(horizontal=not vertical, vertical_alignment="center",
+                      horizontal_alignment="left" if vertical else "right", gap="small"):
+        components.html(print_button_html(doc), height=44, width=220 if vertical else 185)
+        st.download_button("Excel", export_excel(student, table, sp, frequency, done, race_time, notes),
                            file_name=f"{stem}.xlsx", icon=":material/download:", key=f"xl_{key}", on_click="ignore",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.download_button("CSV", export_csv(table, done), file_name=f"{stem}.csv", mime="text/csv",
+        st.download_button("CSV", export_csv(table, done, notes), file_name=f"{stem}.csv", mime="text/csv",
                            icon=":material/download:", key=f"csv_{key}", on_click="ignore")
         st.download_button("Page imprimable", print_page(doc, f"Plan de {student.display_name}"),
                            file_name=f"{stem}.html", mime="text/html", icon=":material/description:",

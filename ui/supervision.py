@@ -19,7 +19,7 @@ from core.moteur import StudentPaces, student_paces
 from core.plan import full_plan_table
 from core.profils import Student
 from ui import composants as ui
-from ui.design import render, week_cards
+from ui.design import journal_html, recent_notes_html, render, week_cards
 
 
 @dataclass
@@ -63,9 +63,17 @@ def render_student_suivi(s: Student) -> None:
               delta_arrow="off" if not pr.race_gap else "auto", border=True,
               help="Écart avec l'objectif (négatif = plus rapide)" if s.objectif else None)
     st.progress(pr.ratio)
-    st.caption(f"Plan affiché pour {stt.frequency} séances par semaine. Les cases sont cochées par l'élève "
-               "dans son espace ; tu les vois ici en lecture seule.")
-    render(week_cards(stt.table, stt.sp.paces, status=stt.status, race_time=pr.race_time))
+    st.caption(f"Plan affiché pour {stt.frequency} séances par semaine. Les cases, ressentis et commentaires "
+               "sont écrits par l'élève dans son espace ; tu les vois ici en lecture seule.")
+    c_log, c_weeks = st.columns([2, 3], gap="large")
+    with c_log:
+        st.markdown(f"#### Carnet de {s.display_name}")
+        with st.container(border=True, key=f"card-log-{s.id}"):
+            render(journal_html(suivi.journal(stt.table, stt.suivi), pr.race_time))
+    with c_weeks:
+        st.markdown("#### Semaine par semaine")
+        render(week_cards(stt.table, stt.sp.paces, status=stt.status, race_time=pr.race_time,
+                          notes=stt.suivi.notes))
 
 
 def render_overview() -> None:
@@ -85,12 +93,21 @@ def render_overview() -> None:
                      "Méthode": METHODS[stt.sp.method], "Objectif / VMA": ref,
                      "Course": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
                      "Progression": round(pr.ratio * 100), "Réalisées": f"{pr.done}/{pr.total}",
-                     "Dernière séance": _fmt_day(pr.last_date), "Temps réalisé": pr.race_time, "Écart": pr.race_gap})
+                     "Dernière séance": _fmt_day(pr.last_date), "Temps réalisé": pr.race_time,
+                     "Écart": pr.race_gap})
     df = pd.DataFrame(rows)
     st.markdown("#### Suivi de tous les élèves")
     st.dataframe(df.drop(columns=["id"]), hide_index=True, width="stretch", column_config={
         "Progression": st.column_config.ProgressColumn("Progression", min_value=0, max_value=100, format="%d %%"),
     })
+    recent = []
+    for stt in states:
+        shown = {r["session_id"]: r for _, r in stt.table.iterrows()} if not stt.table.empty else {}
+        recent += [(n.le, stt.student.display_name, shown[sid], n) for sid, n in stt.suivi.notes.items() if sid in shown]
+    if recent:
+        st.markdown("#### Derniers ressentis")
+        with st.container(key="card-log-recent"):
+            render(recent_notes_html(sorted(recent, key=lambda x: x[0], reverse=True)[:10]))
     by_id = {stt.student.id: stt.student for stt in states}
     choice = st.selectbox("Voir le détail d'un élève", [None, *by_id], key="sup_detail",
                           format_func=lambda i: "Choisir un élève…" if i is None else

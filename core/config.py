@@ -113,6 +113,12 @@ DAY_LABELS: dict[str, str] = {"lun": "Lundi", "mar": "Mardi", "mer": "Mercredi",
 # Séance de course : sa durée est l'objectif (cellule E11 = D4 de l'Excel).
 RACE_DAY_LABEL = "JOUR J"
 
+# Ressenti de l'élève après une séance ou la course (1 = très dur … 5 = excellent).
+FEELINGS: dict[int, tuple[str, str]] = {
+    1: ("😣", "Très dur"), 2: ("😕", "Dur"), 3: ("😐", "Correct"), 4: ("🙂", "Bien"), 5: ("😄", "Excellent"),
+}
+COMMENT_MAX = 1000   # caractères
+
 # ----------------------------------------------------------------------------
 # Schéma des séances
 # ----------------------------------------------------------------------------
@@ -137,7 +143,7 @@ WEEK_COLUMNS: list[str] = ["week_id", "position", "phase"]
 
 DISPLAY_NAMES: dict[str, str] = {
     "semaine": "Semaine", "debut": "Du", "fin": "Au", "phase": "Phase", "date": "Date", "jour": "Jour",
-    "fait": "Réalisée",
+    "fait": "Réalisée", "ressenti": "Ressenti", "commentaire": "Commentaire",
     "seance": "Séance", "km_env": "Km (env.)", "duree_env": "Durée (env.)",
     "contenu": "Contenu", "km_spe": "Km spé.", "allure": "Allure",
     "frequence": "Fréquence", "allure_txt": "Allure /km", "allure_dec": "Allure (min,cent./km)",

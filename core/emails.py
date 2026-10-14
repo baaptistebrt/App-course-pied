@@ -70,8 +70,9 @@ def build_access_email(student, config: EmailConfig, app_url: str) -> EmailMessa
         f"Ton plan d'entraînement {dist.lower()} t'attend.\n\n"
         f"1. Ouvre l'application : {app_url}\n"
         f"2. Saisis ton code d'accès : {student.code}\n\n"
-        "Tu y trouveras tes allures, tes séances semaine par semaine, et tu pourras cocher "
-        "chaque séance réalisée.\n\nGarde ce code pour toi : il donne accès à ton plan.\n\n"
+        "Tu y trouveras ta prochaine séance, tes allures et ton plan semaine par semaine. Coche chaque "
+        "séance réalisée et dis comment tu l'as sentie : ton coach suit tes ressentis.\n\n"
+        "Garde ce code pour toi : il donne accès à ton plan.\n\n"
         f"Bonne préparation !\n{config.sender_name}\n")
     e = html.escape
     msg.set_content(text)
@@ -86,7 +87,8 @@ def build_access_email(student, config: EmailConfig, app_url: str) -> EmailMessa
   <p>Ton code d'accès :</p>
   <p style="font-size:26px;font-weight:bold;letter-spacing:2px;background:#FFC629;display:inline-block;
      padding:6px 14px;border-radius:6px">{e(student.code)}</p>
-  <p>Tu y trouveras tes allures, tes séances semaine par semaine, et tu pourras cocher chaque séance réalisée.</p>
+  <p>Tu y trouveras ta prochaine séance, tes allures et ton plan semaine par semaine. Coche chaque séance
+     réalisée et dis comment tu l'as sentie : ton coach suit tes ressentis.</p>
   <p style="color:#5B6B80;font-size:13px">Garde ce code pour toi : il donne accès à ton plan.<br>
      Lien : <a href="{e(app_url)}">{e(app_url)}</a></p>
   <p>Bonne préparation !<br>{e(config.sender_name)}</p>

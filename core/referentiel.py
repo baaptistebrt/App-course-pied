@@ -76,12 +76,21 @@ def load_global_ratios(store: Store) -> dict[str, dict[str, float]]:
     return {d: clean_ratios(r) for d, r in out.items()}
 
 
+def vma_pct_value(row) -> tuple:
+    """(% min, % max) d'une ligne d'onglet « vma » ; une colonne « pct » seule donne une valeur unique."""
+    lo, hi = row.get("pct_min"), row.get("pct_max")
+    missing = lambda v: v is None or (isinstance(v, float) and pd.isna(v))  # noqa: E731
+    if missing(lo) and not missing(row.get("pct")):
+        lo = hi = row.get("pct")
+    return (lo, hi if not missing(hi) else lo)
+
+
 def load_global_vma_pct(store: Store) -> dict[str, dict[str, tuple[float, float]]]:
     """{distance: {code: (% min, % max)}} ; valeurs du plan 10 km de référence par défaut."""
     out = {d: dict(DEFAULT_VMA_PCT) for d in DISTANCE_KEYS}
     for _, row in _read_formules(store).get("vma", pd.DataFrame()).iterrows():
         if row.get("distance") in out and row.get("allure") in PACE_CODES:
-            out[row["distance"]][row["allure"]] = (row.get("pct_min"), row.get("pct_max"))
+            out[row["distance"]][row["allure"]] = vma_pct_value(row)
     return {d: clean_vma_pct(r) for d, r in out.items()}
 
 

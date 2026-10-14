@@ -24,8 +24,8 @@ from core.moteur import comparison, student_paces
 from core.plan import weeks_until
 from core.profils import Student
 from ui import composants as ui
-from ui import supervision
-from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render, week_cards
+from ui import eleve, supervision
+from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render
 
 FREQ_FMT = {3: "3 séances", 4: "4 séances"}
 DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:"}
@@ -332,7 +332,7 @@ def student_panel(s: Student) -> None:
     render(paces_track(sp.paces, basis))
 
     t_plan, t_form, t_suivi, t_preview = st.tabs(["Plan de l'élève", "Formules de l'élève", "Suivi",
-                                                  "Aperçu et export"], key=f"stabs_{s.id}")
+                                                  "Vue élève"], key=f"stabs_{s.id}")
     with t_plan:
         ui.plan_editor(
             s.plan, sp.paces, sp.race_seconds, s.date_course, key=f"plan_{s.id}",
@@ -360,11 +360,7 @@ def student_panel(s: Student) -> None:
     with t_suivi:
         supervision.render_student_suivi(s)
     with t_preview:
-        stt = supervision.student_state(s)
-        st.caption(f"Ce que voit l'élève ({stt.frequency} séances par semaine), avec ses séances réalisées.")
-        ui.exports_bar(s, stt.table, sp, stt.frequency, key=f"exp_{s.id}",
-                       done={k for k, v in stt.status.items() if v}, race_time=stt.progress.race_time)
-        render(week_cards(stt.table, sp.paces, status=stt.status, race_time=stt.progress.race_time))
+        eleve.render_space(s, readonly=True, prefix=f"pv{s.id}")
 
 
 def info_weeks(s: Student) -> None:

@@ -8,8 +8,10 @@ Application Streamlit pour un coach de course à pied.
   généré et **envoyé automatiquement par e-mail**. Il calcule les allures **par objectif de temps
   ou par VMA** (ou les deux, pour comparer), ajuste le plan, les formules, et **supervise** les
   séances réalisées et le temps de course de chaque élève.
-- **L'élève** (son code) voit son plan, **coche chaque séance réalisée**, saisit son **temps de
-  course** le jour J, choisit 3 ou 4 séances par semaine, exporte (Excel / CSV) et imprime.
+- **L'élève** (son code) voit sa **prochaine séance** et sa progression sur un **tour de piste**,
+  coche chaque séance réalisée, note son **ressenti** et un commentaire, saisit son **temps de
+  course** et raconte sa course le jour J, choisit 3 ou 4 séances par semaine, exporte et imprime.
+- Le coach voit **exactement ce que voit l'élève** (onglet « Vue élève » de sa fiche, en lecture seule).
 
 ---
 
@@ -95,15 +97,32 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
 
 ---
 
-## 6. Suivi et supervision
+## 6. Espace élève
 
-- L'élève coche ses séances et saisit son temps le jour J. Ces informations sont rangées dans
+- **Tour de piste** : toute la préparation est un tour de piste ; le tracé jaune avance à chaque
+  séance cochée jusqu'à la ligne d'arrivée. Au centre, le compte à rebours (J-46), puis « Jour J »,
+  puis le chrono réalisé. À côté : la semaine en cours, l'objectif, les km courus, les séances faites.
+- **Ta prochaine séance** : contenu, km, durée, allures en grand, bouton « C'est fait ! ». Les séances
+  oubliées des semaines passées ne bloquent pas : on passe à la semaine en cours.
+- **Ressenti** : après une séance cochée, une carte demande « comment tu l'as sentie ? »
+  (5 niveaux, de 😣 Très dur à 😄 Excellent) et un mot pour le coach. Chaque séance du plan a aussi
+  son bouton « Ressenti ».
+- **Jour J** : carte dédiée avec le temps réalisé, le ressenti et « Raconte ta course ».
+- Onglets **Mon plan** (semaine en cours ouverte, autres semaines repliées), **Mes allures**,
+  **Mon carnet** (toutes les séances faites avec ressentis et commentaires).
+
+## 7. Suivi et supervision
+
+- Cases cochées, ressentis, commentaires et temps de course sont rangés dans
   `data/suivi/<id>.xlsx`, un fichier que **seul l'élève modifie** : le coach ne peut ni les
   changer ni les effacer en modifiant le plan.
-- Le coach voit le suivi dans la fiche de l'élève (onglet **Suivi**) et pour tous les élèves dans
-  l'onglet **Supervision** (progression, dernière séance cochée, temps réalisé, écart à l'objectif).
+- Fiche de l'élève, onglet **Suivi** : chiffres clés, carnet de l'élève, semaines avec ✅ et ressentis.
+  Onglet **Vue élève** : son espace exactement comme il le voit, en lecture seule.
+- Onglet **Supervision** : tous les élèves (progression, dernière séance, temps réalisé, écart à
+  l'objectif, dernier ressenti).
+- Les exports Excel / CSV / impression de l'élève contiennent ses ressentis et commentaires.
 
-## 7. Visuels
+## 8. Visuels
 
 Par défaut, une illustration de virage de piste d'athlétisme. Onglet **Réglages** : importe tes
 photos pour la page d'accueil et pour les bandeaux (redimensionnées automatiquement, copiées sur
@@ -111,17 +130,17 @@ GitHub avec les données).
 
 ---
 
-## 8. Données
+## 9. Données
 
 ```
 data/formules.xlsx            ratios et % VMA globaux par distance
 data/modeles/<distance>.xlsx  modèles de référence
 data/eleves/<id>.xlsx         profil, méthode, formules et plan de l'élève (écrit par le coach)
-data/suivi/<id>.xlsx          séances réalisées, temps de course, fréquence (écrit par l'élève)
+data/suivi/<id>.xlsx          séances réalisées, ressentis, commentaires, temps de course, fréquence (élève)
 data/medias/                  photos de l'accueil et des bandeaux
 ```
 
-## 9. Structure du code
+## 10. Structure du code
 
 ```
 app.py                page d'accueil publique et aiguillage coach / élève
@@ -132,17 +151,17 @@ core/                 logique métier, sans Streamlit
   modeles.py          modèles des 3 distances (dont le 10 km de l'Excel)
   referentiel.py      formules globales, modèles enregistrés, mises à jour
   profils.py          élèves, codes d'accès
-  suivi.py            séances réalisées, temps réalisé (côté élève)
+  suivi.py            séances réalisées, ressentis, prochaine séance, carnet (côté élève)
   emails.py           envoi du code par e-mail (SMTP)
   stockage.py         fichiers locaux + copie GitHub
   exports.py          Excel, CSV, document imprimable
   auth.py             codes d'accès
 ui/                   interface
-  design.py           identité visuelle, page d'accueil, dossard, couloirs, semaines
+  design.py           identité visuelle, accueil, tour de piste, couloirs, semaines, carnet
   composants.py       éditeur de plan, éditeurs de formules, exports
   editeur.py          interface coach (distances, réglages)
   supervision.py      supervision (lecture seule)
-  eleve.py            espace élève
+  eleve.py            espace élève (aussi affiché au coach, en lecture seule)
   assets/             illustration de piste et logo
 tests/                tests automatiques (calculs vs les deux Excel, suivi, e-mails, GitHub simulé)
 ```

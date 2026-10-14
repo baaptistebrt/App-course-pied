@@ -16,7 +16,8 @@ from .config import DAY_LABELS, DAYS, DISPLAY_NAMES, DISTANCES, FREQ_LABELS, MET
 from .plan import is_race_day, pace_codes, week_summary
 
 EXPORT_COLUMNS = ["semaine", "debut", "fin", "phase", "seance", "date", "km_env", "duree_env", "contenu",
-                  "allure", "allure_txt", "km_spe", "temps_aff", "temps_spe_min", "frequence", "fait", "remarque"]
+                  "allure", "allure_txt", "km_spe", "temps_aff", "temps_spe_min", "frequence", "fait", "ressenti",
+                  "commentaire", "remarque"]
 
 MONTHS = ["janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.", "déc."]
 WEEKDAYS = ["lun.", "mar.", "mer.", "jeu.", "ven.", "sam.", "dim."]
@@ -33,16 +34,21 @@ def pace_labels(value) -> str:
     return ", ".join(PACE_LABELS[c] for c in pace_codes(value))
 
 
-def export_table(table: pd.DataFrame, done: set[str] | None = None) -> pd.DataFrame:
+def export_table(table: pd.DataFrame, done: set[str] | None = None, notes: dict | None = None) -> pd.DataFrame:
+    """Plan à exporter ; `done` ajoute « Réalisée », `notes` ajoute « Ressenti » et « Commentaire »."""
     out = table.copy()
-    out["fait"] = ["Oui" if done and sid in done else ("Non" if done is not None else "")
-                   for sid in out.get("session_id", [""] * len(out))]
+    ids = list(out.get("session_id", [""] * len(out)))
+    out["fait"] = ["Oui" if done and sid in done else ("Non" if done is not None else "") for sid in ids]
+    out["ressenti"] = [notes[sid].label if notes and sid in notes else "" for sid in ids]
+    out["commentaire"] = [notes[sid].commentaire if notes and sid in notes else "" for sid in ids]
     out = out.reindex(columns=EXPORT_COLUMNS)
     out["allure"] = [pace_labels(c) for c in out["allure"]]
     out["frequence"] = [FREQ_LABELS.get(f, "") for f in out["frequence"]]
     out["temps_spe_min"] = pd.to_numeric(out["temps_spe_min"], errors="coerce").round(0)
     if done is None:
         out = out.drop(columns=["fait"])
+    if notes is None:
+        out = out.drop(columns=["ressenti", "commentaire"])
     return out.rename(columns=DISPLAY_NAMES)
 
 
@@ -80,10 +86,10 @@ def profile_rows(student, sp, frequency: int, race_time: str = "") -> list[tuple
 
 
 def export_excel(student, table: pd.DataFrame, sp, frequency: int, done: set[str] | None = None,
-                 race_time: str = "") -> bytes:
+                 race_time: str = "", notes: dict | None = None) -> bytes:
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        export_table(table, done).to_excel(writer, sheet_name="Plan", index=False)
+        export_table(table, done, notes).to_excel(writer, sheet_name="Plan", index=False)
         paces_table(sp, student).to_excel(writer, sheet_name="Allures", index=False)
         pd.DataFrame(profile_rows(student, sp, frequency, race_time), columns=["", "Valeur"]).to_excel(
             writer, sheet_name="Profil", index=False)
@@ -112,9 +118,9 @@ def export_excel(student, table: pd.DataFrame, sp, frequency: int, done: set[str
     return buffer.getvalue()
 
 
-def export_csv(table: pd.DataFrame, done: set[str] | None = None) -> bytes:
+def export_csv(table: pd.DataFrame, done: set[str] | None = None, notes: dict | None = None) -> bytes:
     """CSV pour Excel en français : séparateur « ; », virgule décimale, UTF-8 avec BOM."""
-    df = export_table(table, done)
+    df = export_table(table, done, notes)
     for col in (DISPLAY_NAMES["debut"], DISPLAY_NAMES["fin"], DISPLAY_NAMES["date"]):
         df[col] = [d.strftime("%d/%m/%Y") if isinstance(d, date) else "" for d in df[col]]
     return df.to_csv(index=False, sep=";", decimal=",").encode("utf-8-sig")
@@ -149,6 +155,7 @@ PRINT_CSS = """
 .doc .race td { font-weight: 600; background: #FFF4D1; }
 .doc .num { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .doc .box { font-size: 13pt; line-height: 1; }
+.doc .feel { color: #33465F; font-style: italic; font-size: 9pt; }
 .doc .foot { margin-top: 14px; color: #5B6B80; font-size: 8.5pt; }
 """
 
@@ -164,7 +171,7 @@ def _zone_badges(value, paces) -> str:
 
 
 def print_document(student, table: pd.DataFrame, sp, frequency: int, done: set[str] | None = None,
-                   race_time: str = "") -> str:
+                   race_time: str = "", notes: dict | None = None) -> str:
     """Corps HTML du plan imprimable (sans <html>), utilisé par le bouton et par le téléchargement."""
     e = html.escape
     dist = DISTANCES[student.distance]
@@ -205,6 +212,9 @@ def print_document(student, table: pd.DataFrame, sp, frequency: int, done: set[s
                 when = fr_date(r.get("date"), weekday=True)
                 label = e(str(r["seance"])) + (f"<br><span class='meta'>{e(when)}</span>" if when else "")
                 content = e(str(r["contenu"])) + (f"<br><b>Réalisé : {e(race_time)}</b>" if race_row and race_time else "")
+                note = (notes or {}).get(r["session_id"])
+                if note is not None and not note.empty:
+                    content += f"<br><span class='feel'>{e(note.label)}{(' : ' + e(note.commentaire)) if note.commentaire else ''}</span>"
                 parts.append(
                     f"<tr{' class=race' if race_row else ''}><td class='box'>{'☑' if checked else '☐'}</td>"
                     f"<td>{label}</td><td>{content}</td>"
