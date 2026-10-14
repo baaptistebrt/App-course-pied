@@ -131,8 +131,8 @@ def test_creation_eleve_et_persistance(store):
     assert loaded.prenom == "Julie" and loaded.objectif == "01:50:00" and loaded.frequence == 3
     assert loaded.date_course == date(2026, 12, 6) and loaded.plan.n_weeks == 7
     assert profils.find_by_code(store, s.code.lower().replace("-", " ")).id == s.id
-    with pytest.raises(ValueError):
-        profils.create_student(store, "julie@example.com", "", "semi", "1:45:00")       # doublon
+    with pytest.raises(ValueError):                                                   # même programme
+        profils.create_student(store, "julie@example.com", "", "semi", "1:45:00", date(2026, 12, 6))
     with pytest.raises(ValueError):
         profils.create_student(store, "pas-un-email", "", "semi", "1:45:00")
 

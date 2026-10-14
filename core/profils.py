@@ -2,11 +2,13 @@
 Gestion des profils élèves : création, codes d'accès, lecture, sauvegarde, suppression.
 
 Chaque élève a son fichier `data/eleves/<id>.xlsx` avec 4 onglets :
-    profil    : clé / valeur (email, prénom, code, distance, méthode, objectif, VMA, date de course…)
+    profil    : clé / valeur (email, prénom, code, distance, nom de la course, méthode, objectif, VMA, date…)
     formules  : ratios propres à l'élève (méthode « objectif de temps »)
     vma       : plages de % de VMA propres à l'élève (méthode « VMA »)
     semaines  : semaines de son plan
     seances   : séances de son plan
+Un fichier = un programme. Plusieurs programmes peuvent appartenir au même élève (même e-mail) : ils
+partagent alors le même code d'accès, et l'élève passe de l'un à l'autre dans son espace.
 Ce fichier n'est écrit que par le coach. Ce que fait l'élève (séances réalisées, temps de course,
 fréquence choisie) est dans un fichier séparé : voir suivi.py.
 """
@@ -52,6 +54,7 @@ class Student:
     vma: float | None = None            # km/h
     vma_pct: dict = field(default_factory=dict)   # {allure: (% min, % max)}
     email_envoye_le: str = ""
+    course: str = ""                    # nom de la course, ex. « Marathon de Paris 2027 » (facultatif)
 
     @property
     def frequence(self) -> int:
@@ -60,6 +63,16 @@ class Student:
     @property
     def display_name(self) -> str:
         return self.prenom or self.email.split("@")[0]
+
+    @property
+    def race_name(self) -> str:
+        """Nom de la course, ou la distance s'il n'est pas renseigné."""
+        return self.course.strip() or DISTANCES[self.distance].label
+
+    @property
+    def person(self) -> str:
+        """Clé de l'élève (ses programmes partagent le même code d'accès)."""
+        return normalize_code(self.code)
 
     @property
     def file(self) -> str:
@@ -100,6 +113,7 @@ def generate_code(existing: set[str], length: int = 8) -> str:
 def student_to_bytes(s: Student) -> bytes:
     profil = pd.DataFrame([
         ("id", s.id), ("email", s.email), ("prenom", s.prenom), ("code", s.code), ("distance", s.distance),
+        ("course", s.course),
         ("methode", s.methode), ("objectif", s.objectif), ("vma", s.vma if s.vma is not None else ""),
         ("date_course", s.date_course.isoformat() if s.date_course else ""),
         ("frequence_defaut", s.frequence_defaut), ("frequence_eleve", s.frequence_eleve or ""),
@@ -168,7 +182,7 @@ def student_from_bytes(content: bytes) -> Student:
         frequence_eleve=freq_el if freq_el in FREQUENCIES else None,
         ratios=clean_ratios(ratios), plan=plan_from_sheets(sheets), cree_le=str(p.get("cree_le", "")),
         methode=methode, vma=vma, vma_pct=clean_vma_pct(vma_pct),
-        email_envoye_le=str(p.get("email_envoye_le", "")),
+        email_envoye_le=str(p.get("email_envoye_le", "")), course=str(p.get("course", "")).strip(),
     )
 
 
@@ -208,10 +222,12 @@ def get_student(store: Store, student_id: str) -> Student | None:
 
 
 def find_by_code(store: Store, code: str) -> Student | None:
+    """Programme ouvert avec ce code (le programme en cours si l'élève en a plusieurs)."""
     wanted = normalize_code(code)
     if not wanted:
         return None
-    return next((s for s in list_students(store) if normalize_code(s.code) == wanted), None)
+    progs = [s for s in list_students(store) if s.person == wanted]
+    return current_program(store, progs) if progs else None
 
 
 def save_student(store: Store, student: Student) -> None:
@@ -228,15 +244,37 @@ def delete_student(store: Store, student_id: str) -> None:
         _cache.pop(rel, None)
 
 
+def programs_of(store: Store, student: Student) -> list[Student]:
+    """Tous les programmes de l'élève (même code d'accès), du plus ancien au plus récent."""
+    progs = [s for s in list_students(store) if s.person == student.person] or [student]
+    return sorted(progs, key=lambda s: (s.date_course or date.max, s.cree_le))
+
+
+def current_program(store: Store, programs: list[Student], today: date | None = None) -> Student:
+    """Programme ouvert à la connexion : la prochaine course pas encore courue, sinon la plus récente."""
+    from .suivi import load_suivi   # import local : suivi ne dépend pas des profils
+
+    today = today or date.today()
+    open_ = [s for s in programs if not load_suivi(store, s.id).temps_realise
+             and (s.date_course is None or s.date_course >= today)]
+    if open_:
+        return min(open_, key=lambda s: (s.date_course or date.max, s.cree_le))
+    return max(programs, key=lambda s: (s.date_course or date.min, s.cree_le))
+
+
 def create_student(store: Store, email: str, prenom: str, distance: str, objectif: str | None = None,
                    date_course: date | None = None, frequence: int = 4,
-                   reserved_codes: set[str] | None = None, vma=None, methode: str | None = None) -> Student:
-    """Crée un élève : code unique, formules et % VMA globaux et modèle de référence actuels de la distance.
+                   reserved_codes: set[str] | None = None, vma=None, methode: str | None = None,
+                   course: str = "") -> Student:
+    """Crée un programme : formules et % VMA globaux et modèle de référence actuels de la distance.
 
+    Nouvel e-mail : nouvel élève avec un code unique. E-mail déjà connu : nouveau programme pour cet
+    élève, avec le même code d'accès (et son prénom si on n'en donne pas).
     Il faut au moins un objectif de temps ou une VMA. La méthode retenue vaut par défaut celle qui est
     renseignée (ou celle de la distance si les deux le sont).
     """
     email = (email or "").strip()
+    course = (course or "").strip()
     if not EMAIL_RE.match(email):
         raise ValueError("Adresse e-mail invalide.")
     if distance not in DISTANCES:
@@ -252,22 +290,57 @@ def create_student(store: Store, email: str, prenom: str, distance: str, objecti
     if methode == "vma" and vma is None:
         raise ValueError("La méthode « VMA » demande une VMA.")
     existing = list_students(store)
-    if any(s.email.lower() == email.lower() and s.distance == distance for s in existing):
-        raise ValueError(f"Un élève {DISTANCES[distance].label.lower()} existe déjà avec cet e-mail.")
-    code = generate_code({s.code for s in existing} | (reserved_codes or set()))
+    same_person = sorted((s for s in existing if s.email.lower() == email.lower()), key=lambda s: s.cree_le)
+    if any(s.distance == distance and s.course.lower() == course.lower() and s.date_course == date_course
+           for s in same_person):
+        what = f"« {course} »" if course else DISTANCES[distance].label.lower()
+        raise ValueError(f"Cet élève a déjà un programme {what} à cette date : donne un nom de course différent.")
+    if same_person:
+        code = same_person[-1].code
+        prenom = (prenom or "").strip() or same_person[-1].prenom
+    else:
+        code = generate_code({s.code for s in existing} | (reserved_codes or set()))
     student = Student(
         id=uuid.uuid4().hex[:10], email=email, prenom=(prenom or "").strip(), code=code, distance=distance,
         objectif=objectif, date_course=date_course, frequence_defaut=frequence if frequence in FREQUENCIES else 4,
         frequence_eleve=None, ratios=dict(load_global_ratios(store)[distance]),
         plan=load_template(store, distance).copy_with_new_ids(), methode=methode, vma=vma,
-        vma_pct=dict(load_global_vma_pct(store)[distance]),
+        vma_pct=dict(load_global_vma_pct(store)[distance]), course=course,
     )
     save_student(store, student)
     return student
 
 
+def update_identity(store: Store, student: Student, email: str, prenom: str) -> Student:
+    """Corrige l'e-mail et le prénom d'un élève, sur tous ses programmes.
+
+    Un nouvel e-mail remet « code non envoyé » : le code n'a pas encore été envoyé à cette adresse."""
+    email = (email or "").strip()
+    if not EMAIL_RE.match(email):
+        raise ValueError("Adresse e-mail invalide.")
+    others = [s for s in list_students(store) if s.person != student.person and s.email.lower() == email.lower()]
+    if others:
+        raise ValueError(f"Cette adresse est déjà celle d'un autre élève ({others[0].display_name}).")
+    changed = email.lower() != student.email.lower()
+    updated = student
+    for prog in programs_of(store, student):
+        new = prog.with_(email=email, prenom=(prenom or "").strip(),
+                         email_envoye_le="" if changed else prog.email_envoye_le)
+        save_student(store, new)
+        if prog.id == student.id:
+            updated = new
+    return updated
+
+
 def regenerate_code(store: Store, student: Student, reserved_codes: set[str] | None = None) -> Student:
-    others = {s.code for s in list_students(store) if s.id != student.id} | (reserved_codes or set())
-    updated = student.with_(code=generate_code(others | {student.code}))
-    save_student(store, updated)
+    """Nouveau code pour l'élève, sur tous ses programmes (l'ancien ne fonctionne plus)."""
+    progs = programs_of(store, student)
+    others = {s.code for s in list_students(store) if s.person != student.person} | (reserved_codes or set())
+    code = generate_code(others | {student.code})
+    updated = student
+    for prog in progs:
+        new = prog.with_(code=code)
+        save_student(store, new)
+        if prog.id == student.id:
+            updated = new
     return updated

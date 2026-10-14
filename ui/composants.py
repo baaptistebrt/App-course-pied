@@ -5,6 +5,7 @@ notifications, éditeur de plan (semaines / séances), éditeur de formules, exp
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 from typing import Callable
 
@@ -223,7 +224,7 @@ def vma_pct_editor(pct: dict, distance: str, vma: float, key: str, on_save: Call
 def exports_bar(student, table: pd.DataFrame, sp, frequency: int, key: str, done: set[str] | None = None,
                 race_time: str = "", notes: dict | None = None, vertical: bool = False) -> None:
     """Boutons d'export Excel / CSV et d'impression du plan affiché (en colonne : vertical=True)."""
-    stem = f"plan_{student.distance}_{student.display_name}".replace(" ", "_")
+    stem = re.sub(r"[^\w-]+", "_", f"plan_{student.race_name}_{student.display_name}").strip("_")
     doc = print_document(student, table, sp, frequency, done, race_time, notes)
     with st.container(horizontal=not vertical, vertical_alignment="center",
                       horizontal_alignment="left" if vertical else "right", gap="small"):

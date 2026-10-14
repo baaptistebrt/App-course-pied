@@ -61,13 +61,15 @@ def load_email_config() -> EmailConfig | None:
 def build_access_email(student, config: EmailConfig, app_url: str) -> EmailMessage:
     """E-mail (texte + HTML) avec le lien de l'application et le code d'accès."""
     dist = DISTANCES[student.distance].label
+    course = getattr(student, "course", "").strip()
+    plan_name = f"pour {course}" if course else dist.lower()
     name = student.prenom or ""
     msg = EmailMessage()
-    msg["Subject"] = f"Ton plan d'entraînement {dist.lower()} est prêt"
+    msg["Subject"] = f"Ton plan d'entraînement {plan_name} est prêt"
     msg["From"] = formataddr((config.sender_name, config.user))
     msg["To"] = student.email
     text = (f"Bonjour {name},\n\n" if name else "Bonjour,\n\n") + (
-        f"Ton plan d'entraînement {dist.lower()} t'attend.\n\n"
+        f"Ton plan d'entraînement {plan_name} t'attend.\n\n"
         f"1. Ouvre l'application : {app_url}\n"
         f"2. Saisis ton code d'accès : {student.code}\n\n"
         "Tu y trouveras ta prochaine séance, tes allures et ton plan semaine par semaine. Coche chaque "
@@ -79,7 +81,7 @@ def build_access_email(student, config: EmailConfig, app_url: str) -> EmailMessa
     msg.add_alternative(f"""\
 <div style="font-family:Arial,Helvetica,sans-serif;color:#14233A;max-width:520px">
   <p>{'Bonjour ' + e(name) + ',' if name else 'Bonjour,'}</p>
-  <p>Ton plan d'entraînement <b>{e(dist.lower())}</b> t'attend.</p>
+  <p>Ton plan d'entraînement <b>{e(plan_name)}</b> t'attend.</p>
   <p style="margin:22px 0">
     <a href="{e(app_url)}" style="background:#1B4F8C;color:#fff;text-decoration:none;padding:12px 20px;
        border-radius:8px;font-weight:bold">Ouvrir mon plan</a>

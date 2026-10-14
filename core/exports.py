@@ -69,8 +69,8 @@ def paces_table(sp, student) -> pd.DataFrame:
 
 def profile_rows(student, sp, frequency: int, race_time: str = "") -> list[tuple[str, str]]:
     dist = DISTANCES[student.distance]
-    rows = [("Élève", student.display_name), ("E-mail", student.email), ("Distance", dist.label),
-            ("Méthode de calcul", METHODS[sp.method])]
+    rows = [("Élève", student.display_name), ("E-mail", student.email), ("Course", student.race_name),
+            ("Distance", dist.label), ("Méthode de calcul", METHODS[sp.method])]
     if student.objectif:
         rows.append(("Objectif", format_race_time(sp.race_seconds)))
     else:
@@ -180,7 +180,8 @@ def print_document(student, table: pd.DataFrame, sp, frequency: int, done: set[s
              else "allures sur l'objectif de temps")
     goal_label = "Objectif" if student.objectif else "Temps estimé"
     parts = [f"<div class='doc'><div class='head'><div><h1>{e(student.display_name)}</h1>"
-             f"<div class='meta'>{e(dist.label)} — {e(race)} — {frequency} séances par semaine — {e(basis)}</div></div>"
+             f"<div class='meta'>{e(student.race_name)}{f' ({e(dist.label)})' if student.course else ''} — {e(race)} — "
+             f"{frequency} séances par semaine — {e(basis)}</div></div>"
              f"<div class='goal'><div class='meta'>{goal_label}</div><b>{e(format_race_time(sp.race_seconds))}</b>"
              + (f"<div class='meta'>Réalisé : <b style='font-size:13pt'>{e(race_time)}</b></div>" if race_time else "")
              + "</div></div>"]

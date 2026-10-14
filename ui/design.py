@@ -89,7 +89,10 @@ BASE_CSS = """
 .stApp { background: var(--concrete); }
 .stApp, .stApp p, .stApp label, .stApp input, .stApp textarea, .stApp button { font-family: Barlow, sans-serif; }
 .stApp h1, .stApp h2, .stApp h3 { font-family: var(--cond); letter-spacing: .01em; color: var(--night); }
-[data-testid="stHeader"] { background: transparent; }
+[data-testid="stHeader"] { background: transparent; pointer-events: none; }
+/* La barre d'outils de Streamlit ne doit pas masquer les boutons placés en haut de page */
+[data-testid="stToolbar"] { pointer-events: none; }
+[data-testid="stToolbar"] button, [data-testid="stToolbar"] a { pointer-events: auto; }
 .block-container { padding-top: 1.6rem; padding-bottom: 4rem; max-width: 1280px; }
 [data-testid="stSidebar"] { background: var(--night); }
 [data-testid="stSidebar"] * { color: #E6EDF5; }
@@ -246,6 +249,9 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
          color: var(--night); white-space: pre-wrap; }
 .log li.race { background: #FFF6D6; border-radius: 10px; padding: 12px; border-top: 0; margin: 4px 0; }
 .log .chrono { font-family: var(--cond); font-weight: 800; font-size: 1.5rem; color: var(--night); }
+.log .chrono small { font-family: Barlow, sans-serif; font-size: .9rem; font-weight: 600; color: var(--muted);
+                     margin-left: 8px; }
+.log .chrono small.faster { color: #17603F; }
 .feel { color: var(--muted); font-size: .9rem; }
 .feel q { quotes: none; font-style: italic; }
 [class*="st-key-"][class*="card-race"] [data-testid="stForm"],
@@ -487,20 +493,21 @@ def lap_svg(p: float, n_weeks: int, p_from: float | None = None) -> str:
 
 
 def bib(name: str, distance: str, race_seconds: int, estimate: bool, race_date: date | None, n_weeks: int,
-        race_time: str = "") -> str:
-    """Dossard de l'élève : distance (bande jaune), objectif, prénom, date de la course."""
+        race_time: str = "", course: str = "") -> str:
+    """Dossard de l'élève : nom de la course ou distance (bande jaune), objectif, prénom, date."""
     dist = DISTANCES[distance]
+    course = (course or "").strip()
     if race_date:
         days = (race_date - date.today()).days
-        when = (f"Course le {fr_date(race_date, True)}" +
+        when = (f"{dist.label if course else 'Course'} le {fr_date(race_date, True)}" +
                 (f", dans {days} jour{'s' if days > 1 else ''}" if days > 0 else
                  (", c'est aujourd'hui !" if days == 0 else "")))
     else:
-        when = f"Plan de {n_weeks} semaines"
+        when = (f"{dist.label}, plan" if course else "Plan") + f" de {n_weeks} semaines"
     done = f"<div class='done'>Réalisé en {e(race_time)}</div>" if race_time else ""
     return (f"<div class='bib' role='img' aria-label='Dossard : {e(name)}, objectif {e(format_race_time(race_seconds))}'>"
             f"<span class='pin tl'></span><span class='pin tr'></span><span class='pin bl'></span><span class='pin br'></span>"
-            f"<div class='band'>{e(dist.label)}</div>"
+            f"<div class='band'>{e(course or dist.label)}</div>"
             f"<div class='num'>{e(format_race_time(race_seconds))}</div>"
             f"{'<div class=est>temps estimé d’après ta VMA</div>' if estimate else ''}"
             f"<div class='who'>{e(name)}</div><div class='when'>{e(when)}</div>{done}</div>")
@@ -582,6 +589,30 @@ def recent_notes_html(items: list) -> str:
                    f"<div><div class='t'>{e(name)}</div><div class='w'>{'🏁 ' if race else ''}{e(session_title(r))}, "
                    f"semaine {int(r['position']) + 1}</div>{feel}{quote}</div></li>")
     return f"<ul class='log'>{''.join(out)}</ul>"
+
+
+def history_html(records: list) -> str:
+    """Espace élève, « Mes courses » : chaque course terminée avec son chrono et son ressenti."""
+    if not records:
+        return ("<div class='empty'>Tes courses terminées apparaîtront ici, avec ton chrono, l'écart à ton objectif "
+                "et ton ressenti.</div>")
+    items = []
+    for r in records:
+        dist = DISTANCES[r.distance].label
+        sub = (f"{dist}, " if r.course != dist else "") + ("temps estimé " if r.objective_is_estimate else "objectif ") + r.objective
+        gap = ""
+        if r.gap:
+            gap = f"<small class='{'faster' if r.gap.startswith('−') else ''}'>{e(r.gap)}</small>"
+        chrono = f"<div class='chrono'>{e(r.race_time)}{gap}</div>" if r.race_time else \
+            "<div class='w'>Temps non saisi</div>"
+        feel = f"<span class='f'>{e(r.feeling)}</span>" if r.feeling else ""
+        quote = f"<q>{e(r.comment)}</q>" if r.comment else ""
+        km = f"{r.km_done:.0f}".replace(".", ",")
+        items.append(f"<li class='race'><div class='d'>{e(fr_date(r.race_date, True)) if r.race_date else ''}</div>"
+                     f"<div><div class='t'>🏁 {e(r.course)}</div><div class='w'>{e(sub)}</div>{chrono}{feel}{quote}"
+                     f"<div class='w'>Plan réalisé à {r.completion} % ({r.done}/{r.total} séances, {km} km)</div>"
+                     f"</div></li>")
+    return f"<ul class='log'>{''.join(items)}</ul>"
 
 
 def preview_note(name: str) -> str:

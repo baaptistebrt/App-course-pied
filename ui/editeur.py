@@ -13,7 +13,7 @@ from datetime import date
 import pandas as pd
 import streamlit as st
 
-from core import profils, referentiel
+from core import historique, profils, referentiel, suivi
 from core.auth import load_editor_code
 from core.calculs import (compute_paces, compute_paces_vma, format_race_time, fr_number, normalize_objective,
                           parse_objective, parse_vma)
@@ -111,17 +111,24 @@ def _create_student(distance: str) -> None:
     """Callback du formulaire « Nouvel élève »."""
     store = ui.app_store()
     g = lambda k: st.session_state.get(f"new_{k}_{distance}")  # noqa: E731
+    known = {s.person for s in profils.list_students(store)
+             if s.email.lower() == (g("email") or "").strip().lower()}
     try:
         student = profils.create_student(
             store, g("email") or "", g("prenom") or "", distance, g("objectif") or None, g("date"),
-            g("freq") or 4, reserved_codes={load_editor_code().value}, vma=g("vma") or None, methode=g("methode"))
+            g("freq") or 4, reserved_codes={load_editor_code().value}, vma=g("vma") or None, methode=g("methode"),
+            course=g("course") or "")
     except ValueError as exc:
         ui.notify(str(exc), "error")
         return
     st.session_state[f"sel_{distance}"] = student.id
-    for k in ("email", "prenom", "date", "vma"):
+    for k in ("email", "prenom", "date", "vma", "course"):
         st.session_state.pop(f"new_{k}_{distance}", None)
-    ui.saved(f"{student.display_name} ajouté(e). Code d'accès : {student.code}")
+    if student.person in known:
+        ui.saved(f"Nouveau programme « {student.race_name} » pour {student.display_name}, "
+                 f"avec son code habituel : {student.code}")
+    else:
+        ui.saved(f"{student.display_name} ajouté(e). Code d'accès : {student.code}")
     if g("send") and load_email_config():
         _send_code(student.id)
 
@@ -130,8 +137,12 @@ def new_student_form(distance: str) -> None:
     dist = DISTANCES[distance]
     email_ready = load_email_config() is not None
     with st.form(f"new_student_{distance}", border=False, clear_on_submit=False):
-        st.text_input("E-mail de l'élève", key=f"new_email_{distance}", placeholder="prenom.nom@exemple.fr")
-        st.text_input("Prénom (facultatif)", key=f"new_prenom_{distance}")
+        st.text_input("E-mail de l'élève", key=f"new_email_{distance}", placeholder="prenom.nom@exemple.fr",
+                      help="E-mail d'un élève existant : crée un nouveau programme pour lui, avec le même code")
+        c0a, c0b = st.columns(2)
+        c0a.text_input("Prénom (facultatif)", key=f"new_prenom_{distance}")
+        c0b.text_input("Nom de la course (facultatif)", key=f"new_course_{distance}",
+                       placeholder=f"ex. {dist.label} de Lyon 2027")
         st.radio("Calcul des allures", list(METHODS), index=list(METHODS).index(dist.default_method),
                  format_func=METHODS.get, horizontal=True, key=f"new_methode_{distance}",
                  help="Tu peux renseigner les deux pour comparer, puis changer de méthode dans la fiche de l'élève")
@@ -149,8 +160,9 @@ def new_student_form(distance: str) -> None:
                     key=f"new_send_{distance}",
                     help=None if email_ready else "Configure l'envoi d'e-mails dans l'onglet Réglages")
         st.caption(f"Le plan part du modèle de référence {dist.label.lower()} et des formules globales actuelles. "
-                   "Un code d'accès personnel est créé automatiquement.")
-        st.form_submit_button("Créer l'élève", type="primary", on_click=_create_student, args=(distance,))
+                   "Un code d'accès personnel est créé automatiquement ; un élève déjà inscrit garde le sien et "
+                   "retrouve tous ses programmes dans son espace.")
+        st.form_submit_button("Créer le programme", type="primary", on_click=_create_student, args=(distance,))
 
 
 def render_students(distance: str) -> None:
@@ -164,24 +176,30 @@ def render_students(distance: str) -> None:
             new_student_form(distance)
         return
 
+    done = {s.id: historique.is_finished(s, suivi.load_suivi(store, s.id)) for s in students}
+    students = sorted(students, key=lambda s: (done[s.id], s.display_name.lower(), s.date_course or date.max))
     ids = [s.id for s in students]
     by_id = {s.id: s for s in students}
     key = f"sel_{distance}"
     if st.session_state.get(key) not in ids:
         st.session_state[key] = ids[0]
     c_sel, c_new = st.columns([3, 1], vertical_alignment="bottom")
-    c_sel.selectbox("Élève", ids, key=key, format_func=lambda i: f"{by_id[i].display_name} — {by_id[i].email}")
+    c_sel.selectbox("Élève et programme", ids, key=key, format_func=lambda i: (
+        f"{by_id[i].display_name} — {by_id[i].race_name}"
+        + (f", {by_id[i].date_course:%d/%m/%Y}" if by_id[i].date_course else "")
+        + (" (terminée)" if done[i] else "")))
     with c_new.popover("Nouvel élève", icon=":material/person_add:", width="stretch"):
         new_student_form(distance)
 
     student_panel(by_id[st.session_state[key]])
 
-    with st.expander(f"Tous les élèves en {label} ({len(students)})"):
+    with st.expander(f"Tous les programmes {label} ({len(students)})"):
         st.dataframe(pd.DataFrame([{
-            "Élève": s.display_name, "E-mail": s.email, "Code": s.code, "Méthode": METHODS[s.methode],
+            "Élève": s.display_name, "Nom de la course": s.course, "Statut": "Terminée" if done[s.id] else "En cours",
+            "E-mail": s.email, "Code": s.code, "Méthode": METHODS[s.methode],
             "Objectif": format_race_time(parse_objective(s.objectif, s.distance)) if s.objectif else "",
             "VMA": fr_number(s.vma) if s.vma is not None else "",
-            "Course": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
+            "Date de course": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
             "Semaines": s.plan.n_weeks, "Code envoyé le": s.email_envoye_le, "Créé le": s.cree_le,
         } for s in students]), hide_index=True, width="stretch")
 
@@ -252,10 +270,30 @@ def student_panel(s: Student) -> None:
             _save_student(s.id, "Fréquence par défaut enregistrée", frequence_defaut=value)
         ui.bump(key)
 
+    def on_course(k: str) -> None:
+        value = (st.session_state.get(k) or "").strip()
+        _save_student(s.id, "Nom de la course enregistré" if value else "Nom de la course effacé", course=value)
+        ui.bump(key)
+
+    def save_identity(prenom_key: str, email_key: str) -> None:
+        current = profils.get_student(store, s.id)
+        try:
+            updated = profils.update_identity(store, current, st.session_state.get(email_key, ""),
+                                              st.session_state.get(prenom_key, ""))
+        except ValueError as exc:
+            ui.notify(str(exc), "error")
+            return
+        if updated.email.lower() != current.email.lower():
+            ui.saved(f"E-mail modifié : {updated.email}. Envoie-lui son code avec le bouton « Envoyer le code "
+                     "par e-mail »." if load_email_config() else f"E-mail modifié : {updated.email}.")
+        else:
+            ui.saved("Élève modifié")
+        ui.bump(key)
+
     def regenerate() -> None:
         updated = profils.regenerate_code(store, profils.get_student(store, s.id),
                                           reserved_codes={load_editor_code().value})
-        ui.saved(f"Nouveau code : {updated.code}. L'ancien ne fonctionne plus.")
+        ui.saved(f"Nouveau code : {updated.code} (pour tous ses programmes). L'ancien ne fonctionne plus.")
         if load_email_config():
             _send_code(updated.id)
         ui.bump(key)
@@ -263,13 +301,27 @@ def student_panel(s: Student) -> None:
     def delete() -> None:
         profils.delete_student(store, s.id)
         st.session_state.pop(f"sel_{s.distance}", None)
-        ui.saved(f"{s.display_name} supprimé(e)")
+        ui.saved(f"Programme « {s.race_name} » de {s.display_name} supprimé")
 
     # ---- identité, code, e-mail
     with st.container(border=True, key=f"card-student-{s.id}"):
         c_who, c_code, c_act = st.columns([2.2, 2.2, 1], vertical_alignment="top")
-        c_who.markdown(f"### {s.display_name}")
-        c_who.caption(f"{s.email} — {DISTANCES[s.distance].label}, créé le {s.cree_le[:10]}")
+        others = [o for o in profils.programs_of(store, s) if o.id != s.id]
+        with c_who:
+            st.markdown(f"### {s.display_name}")
+            st.markdown(f"**{s.race_name}**" + (f" ({DISTANCES[s.distance].label})" if s.course else ""))
+            st.caption(f"{s.email}, programme créé le {s.cree_le[:10]}")
+            if others:
+                st.caption("Autres programmes : " + ", ".join(
+                    o.race_name + (f" du {o.date_course:%d/%m/%Y}" if o.date_course else "") for o in others))
+            with st.popover("Modifier le prénom ou l'e-mail", icon=":material/edit:", key=f"idpop_{s.id}_{ver}"):
+                pk, ek = f"idp_{s.id}_{ver}", f"ide_{s.id}_{ver}"
+                with st.form(f"ident_{s.id}_{ver}", border=False):
+                    st.text_input("Prénom", value=s.prenom, key=pk)
+                    st.text_input("E-mail", value=s.email, key=ek)
+                    st.form_submit_button("Enregistrer", type="primary", icon=":material/check:",
+                                          on_click=save_identity, args=(pk, ek))
+                st.caption("S'applique à tous les programmes de l'élève. Son code d'accès ne change pas.")
         with c_code:
             st.caption("Code d'accès")
             st.code(s.code, language=None)
@@ -287,10 +339,14 @@ def student_panel(s: Student) -> None:
             st.button("Générer un nouveau code", icon=":material/key:", on_click=regenerate,
                       key=f"regen_{s.id}_{ver}", width="stretch", help="L'ancien code ne fonctionnera plus")
             ok = st.checkbox("Confirmer la suppression", key=f"delok_{s.id}_{ver}")
-            st.button("Supprimer l'élève", icon=":material/delete:", type="primary", disabled=not ok,
-                      on_click=delete, key=f"del_{s.id}_{ver}", width="stretch")
+            st.button("Supprimer ce programme" if others else "Supprimer l'élève", icon=":material/delete:",
+                      type="primary", disabled=not ok, on_click=delete, key=f"del_{s.id}_{ver}", width="stretch",
+                      help="Ses autres programmes sont gardés" if others else None)
 
-        c_date, c_freq, c_info = st.columns([1, 1.1, 2], vertical_alignment="bottom")
+        c_name, c_date, c_freq, c_info = st.columns([1.3, 1, 1.1, 1.7], vertical_alignment="bottom")
+        k_name = f"course_{s.id}_{ver}"
+        c_name.text_input("Nom de la course (facultatif)", value=s.course, key=k_name, on_change=on_course,
+                          args=(k_name,), placeholder=f"ex. {DISTANCES[s.distance].label} de Lyon 2027")
         k_date = f"date_{s.id}_{ver}"
         c_date.date_input("Date de course (facultatif)", value=s.date_course, format="DD/MM/YYYY", key=k_date,
                           on_change=on_date, args=(k_date,))

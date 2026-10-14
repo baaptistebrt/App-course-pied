@@ -19,13 +19,13 @@ from datetime import date
 
 import streamlit as st
 
-from core import profils, suivi
+from core import historique, profils, suivi
 from core.config import COMMENT_MAX, DISTANCES, FEELINGS, FREQUENCIES
 from core.exports import fr_date
 from core.plan import is_race_day
 from ui import composants as ui
 from ui import supervision
-from ui.design import (bib, journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
+from ui.design import (bib, history_html, journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
                        render, session_meta, session_title, week_brief, week_header)
 
 FEEL_OPTIONS = list(FEELINGS)
@@ -65,11 +65,27 @@ def render_student(student_id: str, on_logout) -> None:
         st.button("Retour à l'accueil", on_click=on_logout)
         return
     ui.show_notifications()
-    st.html("<style>.block-container { max-width: 1000px; }</style>")
-    with st.container(horizontal=True, horizontal_alignment="right"):
+    st.html("<style>.block-container { max-width: 1000px; padding-top: 3rem; }"
+            ".st-key-my_program [role='radiogroup'] { flex-wrap: wrap; overflow: visible; }</style>")
+    programs = profils.programs_of(store, s)
+    with st.container(horizontal=True, vertical_alignment="center", key="student-top"):
+        if len(programs) > 1:
+            by_id = {p.id: p for p in programs}
+            finished = {p.id: historique.is_finished(p, suivi.load_suivi(store, p.id)) for p in programs}
+
+            def switch() -> None:
+                chosen = st.session_state.get("my_program")
+                if chosen in by_id:            # uniquement les programmes de cet élève (même code)
+                    st.session_state["student_id"] = chosen
+
+            st.pills("Mes programmes", list(by_id), default=s.id, key="my_program", required=True,
+                     on_change=switch, label_visibility="collapsed", width="stretch",
+                     format_func=lambda i: by_id[i].race_name + (" ✓" if finished[i] else ""))
+        else:
+            st.space("stretch")
         st.button("Se déconnecter", icon=":material/logout:", on_click=on_logout, key="logout_student",
                   type="tertiary")
-    render_space(s, readonly=False, prefix="me")
+    render_space(s, readonly=False, prefix=f"me{s.id}")
 
 
 def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
@@ -217,7 +233,7 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     if readonly:
         render(preview_note(s.display_name))
     bib_html = bib(s.display_name, s.distance, sp.race_seconds, sp.race_is_estimate, s.date_course, n_weeks,
-                   pr.race_time)
+                   pr.race_time, s.course)
     render(lap_hero(bib_html=bib_html, hello=hello, title=title, text=text, big=big, small=small, stats=stats, p=p,
                     n_weeks=n_weeks, p_from=p_from, label=f"Tour de piste : {pct} % des séances faites"))
 
@@ -270,7 +286,8 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             render("<div class='allset'>Toutes tes séances sont faites. Bravo !</div>")
 
     # ------------------------------------------------------------------ onglets
-    t_plan, t_paces, t_log = st.tabs(["Mon plan", "Mes allures", "Mon carnet"], key=k("tabs"))
+    t_plan, t_paces, t_log, t_races = st.tabs(["Mon plan", "Mes allures", "Mon carnet", "Mes courses"],
+                                              key=k("tabs"))
 
     with t_plan:
         done_ids = {sid for sid, ok in stt.status.items() if ok}
@@ -341,3 +358,6 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
 
     with t_log, st.container(key=f"{prefix}-card-log"):
         render(journal_html(suivi.journal(table, sv), pr.race_time))
+
+    with t_races, st.container(key=f"{prefix}-card-log-races"):
+        render(history_html(historique.race_history(store, profils.programs_of(store, s))))
