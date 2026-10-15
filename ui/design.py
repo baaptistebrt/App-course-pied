@@ -256,6 +256,8 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .feel q { quotes: none; font-style: italic; }
 [class*="st-key-"][class*="card-race"] [data-testid="stForm"],
 [class*="st-key-"][class*="card-feel"] [data-testid="stForm"] { background: transparent; padding: 0; }
+[class*="st-key-"][class*="card-chart"] { background: #fff; border-radius: 14px; padding: 6px 10px 2px; }
+[class*="st-key-"][class*="card-routes"] { background: #fff; border-radius: 16px; padding: 14px 16px 16px; }
 .preview-note { background: var(--night); color: #E6EDF5; border-radius: 10px; padding: 10px 14px; margin-bottom: 12px; }
 
 @media (max-width: 560px) {

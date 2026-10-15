@@ -24,7 +24,8 @@ from core.config import COMMENT_MAX, DISTANCES, FEELINGS, FREQUENCIES
 from core.exports import fr_date
 from core.plan import is_race_day
 from ui import composants as ui
-from ui import supervision
+from ui import planning, progression, supervision
+from ui.parcours import render_student_routes
 from ui.design import (bib, history_html, journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
                        render, session_meta, session_title, week_brief, week_header)
 
@@ -286,8 +287,12 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             render("<div class='allset'>Toutes tes séances sont faites. Bravo !</div>")
 
     # ------------------------------------------------------------------ onglets
-    t_plan, t_paces, t_log, t_races = st.tabs(["Mon plan", "Mes allures", "Mon carnet", "Mes courses"],
-                                              key=k("tabs"))
+    t_plan, t_planning, t_paces, t_log, t_races, t_prog, t_routes = st.tabs(
+        ["Mon plan", "Mon Planning", "Mes allures", "Mon carnet", "Mes courses", "Ma progression",
+         "Découverte de parcours"], key=k("tabs"))
+
+    with t_planning:
+        planning.render_planning(s, stt, readonly, prefix)
 
     with t_plan:
         done_ids = {sid for sid, ok in stt.status.items() if ok}
@@ -359,5 +364,14 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     with t_log, st.container(key=f"{prefix}-card-log"):
         render(journal_html(suivi.journal(table, sv), pr.race_time))
 
+    records = historique.race_history(store, profils.programs_of(store, s))
     with t_races, st.container(key=f"{prefix}-card-log-races"):
-        render(history_html(historique.race_history(store, profils.programs_of(store, s))))
+        render(history_html(records))
+
+    with t_prog:
+        progression.render_program(stt, f"{prefix}_prog")
+        st.markdown("##### Tes courses")
+        progression.render_races(records, f"{prefix}_races")
+
+    with t_routes:
+        render_student_routes(prefix)

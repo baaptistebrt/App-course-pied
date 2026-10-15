@@ -100,6 +100,8 @@ ZONE_COLORS: dict[str, tuple[str, str]] = {   # (fond, texte)
 # Fréquence d'entraînement
 # ----------------------------------------------------------------------------
 FREQUENCIES: list[int] = [3, 4]
+# Nombre de séances qu'un élève peut choisir pour UNE semaine donnée (« Modifier ma semaine »).
+WEEK_COUNTS: list[int] = [2, 3, 4]
 # Valeurs de la colonne « frequence » d'une séance.
 FREQ_ALWAYS = "3-4"     # séance faite dans les deux cas
 FREQ_ONLY_4 = "4"       # séance faite seulement à 4 séances par semaine
@@ -134,11 +136,13 @@ SESSION_COLUMNS: list[str] = [
     "km_spe",      # km à l'allure choisie (nombre) -> temps spécifique calculé (plan marathon)
     "temps_spe",   # temps spécifique saisi (texte, ex. « 27'30 », plan 10 km) ; prioritaire sur le calcul
     "allure",      # code(s) d'allure, séparés par des virgules : « A1 » ou « A1,A3 »
+    "intensite",   # intensité en texte libre, saisie par le coach (affichée telle quelle dans « Mon Planning »)
     "frequence",   # « 3-4 » (toujours) ou « 4 » (seulement à 4 séances/semaine)
     "remarque",    # note libre
 ]
 SESSION_INPUT_COLUMNS: list[str] = [c for c in SESSION_COLUMNS if c not in ("week_id", "ordre")]
-SESSION_TEXT_COLUMNS: list[str] = ["session_id", "seance", "km_env", "duree_env", "contenu", "temps_spe", "remarque"]
+SESSION_TEXT_COLUMNS: list[str] = ["session_id", "seance", "km_env", "duree_env", "contenu", "temps_spe", "remarque",
+                                   "intensite"]
 WEEK_COLUMNS: list[str] = ["week_id", "position", "phase"]
 
 DISPLAY_NAMES: dict[str, str] = {
@@ -148,7 +152,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "contenu": "Contenu", "km_spe": "Km spé.", "allure": "Allure",
     "frequence": "Fréquence", "allure_txt": "Allure /km", "allure_dec": "Allure (min,cent./km)",
     "vitesse": "km/h", "temps_aff": "Temps spé.", "temps_spe_min": "Temps spé. calculé (min)",
-    "remarque": "Remarque",
+    "remarque": "Remarque", "intensite": "Intensité",
 }
 
 # Semaine ajoutée à la main : squelette de 3 séances, comme la semaine S0 de l'Excel.

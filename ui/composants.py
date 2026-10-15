@@ -66,8 +66,8 @@ def bump(key: str) -> None:
 
 # =========================================================================== éditeur de plan
 COMPUTED = ["allure_txt", "temps_auto"]
-EDITOR_ORDER = ["seance", "jour", "km_env", "duree_env", "contenu", "allure", "km_spe", "temps_spe", "frequence",
-                *COMPUTED, "remarque"]
+EDITOR_ORDER = ["seance", "jour", "km_env", "duree_env", "contenu", "allure", "intensite", "km_spe", "temps_spe",
+                "frequence", *COMPUTED, "remarque"]
 
 
 def column_config() -> dict:
@@ -83,6 +83,9 @@ def column_config() -> dict:
                                        format_func=lambda c: PACE_LABELS.get(c, c),
                                        color=[ZONE_COLORS[c][0] for c in PACE_CODES],
                                        help="Une ou plusieurs allures ; elles se calculent selon la méthode de l'élève"),
+        "intensite": cc.TextColumn("Intensité", width=150,
+                                   help="Texte libre affiché tel quel à l'élève dans « Mon Planning », "
+                                        "ex. « Facile, en aisance respiratoire »"),
         "km_spe": cc.NumberColumn("Km spé.", width=66, min_value=0.0, max_value=60.0, step=0.1, format="%.1f",
                                   help="Km à la 1re allure : le temps spécifique est alors calculé"),
         "temps_spe": cc.TextColumn("Temps spé.", width=78,
@@ -103,7 +106,7 @@ def editor_frame(sessions: pd.DataFrame, paces: dict[str, Pace], seconds: int) -
     view["allure_txt"] = comp["allure_txt"]
     view["temps_auto"] = [format_minutes(m) for m in comp["temps_spe_min"]]
     for col in ("session_id", "seance", "jour", "km_env", "duree_env", "contenu", "temps_spe", "remarque",
-                "allure_txt", "temps_auto", "frequence"):
+                "intensite", "allure_txt", "temps_auto", "frequence"):
         view[col] = view[col].astype(object)
     view["jour"] = [d or None for d in view["jour"]]
     view["allure"] = pd.Series([pace_codes(v) for v in view["allure"]], dtype=object)

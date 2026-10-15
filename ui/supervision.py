@@ -18,6 +18,7 @@ from core.calculs import format_race_time, fr_number
 from core.config import DISTANCES, METHODS
 from core.profils import Student
 from ui import composants as ui
+from ui import progression
 from ui.design import journal_html, recent_notes_html, render, week_cards
 
 
@@ -110,6 +111,8 @@ def render_overview() -> None:
     else:
         st.caption("Les courses apparaissent ici dès que l'élève a saisi son temps, ou après la date de la course.")
 
+    render_progress_analysis(states)
+
     recent = []
     for stt in states:
         shown = {r["session_id"]: r for _, r in stt.table.iterrows()} if not stt.table.empty else {}
@@ -125,3 +128,24 @@ def render_overview() -> None:
                           f"{by_id[i].display_name} — {by_id[i].race_name}")
     if choice:
         render_student_suivi(by_id[choice])
+
+
+def render_progress_analysis(states: list) -> None:
+    """Analyse de progression (Plotly) : assiduité de tous les programmes en cours, puis vue consolidée
+    d'un élève (tous ses programmes : séances, volume, ressentis, courses)."""
+    st.markdown("#### Analyse de progression")
+    running = [stt for stt in states if not stt.finished()]
+    fig = progression.completion_overview(running)
+    if fig is not None:
+        with st.container(key="card-chart-overview"):
+            st.plotly_chart(fig, config=progression.CONFIG, theme=None, key="ch_overview")
+    people: dict[str, list] = {}
+    for stt in states:
+        people.setdefault(stt.student.person, []).append(stt.student)
+    names = {k: v[0].display_name for k, v in people.items()}
+    person = st.selectbox("Progression d'un élève", [None, *sorted(people, key=lambda k: names[k].lower())],
+                          key="sup_person", format_func=lambda k: "Choisir un élève…" if k is None else
+                          f"{names[k]} ({len(people[k])} programme{'s' if len(people[k]) > 1 else ''})")
+    if person:
+        progs = sorted(people[person], key=lambda p: (p.date_course or date.max, p.cree_le))
+        progression.render_person(ui.app_store(), progs, f"sup_{person}")

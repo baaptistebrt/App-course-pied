@@ -14,6 +14,10 @@ Application Streamlit pour un coach de course à pied.
 - Le coach voit **exactement ce que voit l'élève** (onglet « Vue élève » de sa fiche, en lecture seule).
 - Un élève peut avoir **plusieurs programmes** (un par course, avec son **nom de course**), sous le
   même code ; les **courses terminées** sont gardées dans un historique (export Excel).
+- **Mon Planning** (élève) : la semaine en cartes par jour, avec l'**intensité** saisie par le coach ;
+  l'élève choisit **2, 3 ou 4 séances pour une semaine donnée** (« Modifier ma semaine »).
+- **Analyse de progression** (graphiques Plotly) côté élève et dans la Supervision du coach ;
+  **Découverte de parcours** : les parcours existants autour d'une ville, trouvés dans OpenStreetMap.
 
 ---
 
@@ -25,6 +29,8 @@ Ton application est déjà déployée depuis le dépôt GitHub `App-course-pied`
    du dossier (`app.py`, `README.md`, `requirements.txt`, dossiers `core`, `ui`, `tests`), puis
    **Commit changes**. Les fichiers existants sont remplacés ; Streamlit redémarre tout seul.
    Le dossier `ui/assets` (illustration et logo) doit bien partir avec `ui`.
+   `requirements.txt` contient Plotly (graphiques de progression) : Streamlit l'installe tout seul
+   au redémarrage, qui prend alors une ou deux minutes.
 2. **E-mails** (facultatif mais conseillé) : voir la partie 3, puis ajoute la section `[email]`
    dans **share.streamlit.io > ⋮ > Settings > Secrets**, sous les sections existantes.
 3. **Données existantes** : elles sont reprises telles quelles. Le modèle 10 km est remplacé
@@ -113,7 +119,33 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
 - **Corriger le prénom ou l'e-mail** : fiche de l'élève, bouton « Modifier le prénom ou l'e-mail ».
   La correction s'applique à tous ses programmes, le code ne change pas ; renvoie-lui ensuite son code.
 
-## 7. Espace élève
+## 7. Mon Planning, séances par semaine, progression, parcours
+
+- **Intensité** : nouvelle colonne du plan (onglet « Plan de l'élève » et modèles), en texte libre,
+  ex. « Facile, en aisance respiratoire ». Elle est reprise telle quelle dans Mon Planning.
+- **Mon Planning** (élève) : semaines en onglets soulignés en haut (« 5 oct-11 oct », « Cette
+  semaine »…), séances en cartes arrondies groupées par jour (« AUJOURD'HUI », « MARDI 13 »…), la
+  séance du jour mise en avant, avec une icône colorée selon le type (footing, fractionné, seuil,
+  allure, progressif, sortie longue, course) et « Intensité : … » ; « Modifier ma semaine » en bas. Le jour vient de la colonne
+  « Jour » du plan ; sans jour, la séance est placée à titre indicatif.
+- **Modifier ma semaine** : 2, 3 ou 4 séances pour la semaine affichée uniquement. En réduisant, les
+  séances du milieu sont masquées (la première et la dernière restent, le jour de course aussi) ; elles
+  réapparaissent intactes, avec leurs cases cochées et ressentis, si l'élève en remet. Le choix est rangé
+  dans le fichier de suivi de l'élève ; le plan du coach n'est jamais modifié.
+- **Ma progression** (élève) et **Analyse de progression** (Supervision du coach, consolidée par élève) :
+  assiduité, séances faites / manquées / à venir par semaine, volume hebdomadaire prévu / couru,
+  ressentis, écart à l'objectif et allure moyenne des courses passées. Chaque graphique a sa table.
+- **Découverte de parcours** : l'élève saisit sa ville (rayon 5, 10 ou 20 km) et l'appli trouve
+  **automatiquement les parcours existants** dans OpenStreetMap, la carte libre (gratuite, sans compte
+  ni clé) : parcours de course et parcours sportifs balisés, sentiers balisés (PR…), tours de parcs,
+  pistes d'athlétisme. Pour chacun : distance réelle du tracé, boucle ou aller simple, distance au
+  centre, lien « Ouvrir la carte » et tracé affiché sur une carte ; filtre par distance. Les très longs
+  itinéraires (GR nationaux) sont écartés. Les résultats sont gardés 7 jours en mémoire.
+  Les parcours **conseillés par le coach** s'affichent en premier : onglet **Parcours**, depuis la
+  recherche (« Ajouter la sélection à ma liste ») ou à la main. Fichier `data/parcours.xlsx`.
+  La qualité dépend de ce qui est cartographié dans OpenStreetMap pour chaque ville.
+
+## 8. Espace élève
 
 - **Dossard** (en haut à gauche) : distance sur la bande jaune, objectif, prénom, date de la course et
   jours restants, puis le temps réalisé.
@@ -130,7 +162,7 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
   **Mon carnet** (toutes les séances faites avec ressentis et commentaires), **Mes courses** (ses courses
   terminées). S'il a plusieurs programmes, il choisit le programme en haut de la page.
 
-## 8. Suivi et supervision
+## 9. Suivi et supervision
 
 - Cases cochées, ressentis, commentaires et temps de course sont rangés dans
   `data/suivi/<id>.xlsx`, un fichier que **seul l'élève modifie** : le coach ne peut ni les
@@ -141,7 +173,7 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
   l'objectif, dernier ressenti).
 - Les exports Excel / CSV / impression de l'élève contiennent ses ressentis et commentaires.
 
-## 9. Visuels
+## 10. Visuels
 
 Par défaut, une illustration de virage de piste d'athlétisme. Onglet **Réglages** : importe tes
 photos pour la page d'accueil et pour les bandeaux (redimensionnées automatiquement, copiées sur
@@ -149,7 +181,7 @@ GitHub avec les données).
 
 ---
 
-## 10. Données
+## 11. Données
 
 ```
 data/formules.xlsx            ratios et % VMA globaux par distance
@@ -157,9 +189,10 @@ data/modeles/<distance>.xlsx  modèles de référence
 data/eleves/<id>.xlsx         un programme : élève, nom de course, méthode, formules, plan (coach)
 data/suivi/<id>.xlsx          séances réalisées, ressentis, commentaires, temps de course, fréquence (élève)
 data/medias/                  photos de l'accueil et des bandeaux
+data/parcours.xlsx            parcours proposés aux élèves (onglet Parcours)
 ```
 
-## 11. Structure du code
+## 12. Structure du code
 
 ```
 app.py                page d'accueil publique et aiguillage coach / élève
@@ -172,6 +205,9 @@ core/                 logique métier, sans Streamlit
   profils.py          élèves et programmes, codes d'accès, correction de l'e-mail
   suivi.py            séances réalisées, ressentis, prochaine séance, carnet (côté élève)
   historique.py       état d'un programme, courses terminées, export de l'historique
+  analyse.py          chiffres de progression (semaines, ressentis, courses)
+  parcours.py         parcours conseillés par le coach
+  decouverte.py       parcours existants trouvés dans OpenStreetMap (Nominatim + Overpass)
   emails.py           envoi du code par e-mail (SMTP)
   stockage.py         fichiers locaux + copie GitHub
   exports.py          Excel, CSV, document imprimable
@@ -181,6 +217,9 @@ ui/                   interface
   composants.py       éditeur de plan, éditeurs de formules, exports
   editeur.py          interface coach (distances, réglages)
   supervision.py      supervision (lecture seule)
+  planning.py         onglet élève « Mon Planning » et « Modifier ma semaine »
+  progression.py      graphiques de progression (Plotly)
+  parcours.py         découverte de parcours (élève) et onglet Parcours (coach)
   eleve.py            espace élève (aussi affiché au coach, en lecture seule)
   assets/             illustration de piste et logo
 tests/                tests automatiques (calculs vs les deux Excel, suivi, e-mails, GitHub simulé)

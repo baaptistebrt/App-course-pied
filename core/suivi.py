@@ -9,6 +9,7 @@ aucun risque qu'une modification du plan par le coach efface une case cochée ou
 Onglet « seances » : une ligne par séance cochée ou commentée
     session_id, fait (1/0), fait_le (AAAA-MM-JJ), ressenti (1 à 5), commentaire, note_le
 Onglet « infos » : temps_realise, frequence, maj_le
+Onglet « semaines » : week_id, seances (nombre de séances choisi par l'élève pour cette semaine)
 Les fichiers d'avant les ressentis n'ont que session_id et fait_le : toutes leurs lignes sont des
 séances réalisées.
 """
@@ -22,7 +23,7 @@ from datetime import date, datetime, timedelta
 import pandas as pd
 
 from .calculs import format_race_time, parse_km_range
-from .config import COMMENT_MAX, FEELINGS, FREQUENCIES
+from .config import COMMENT_MAX, FEELINGS, FREQUENCIES, WEEK_COUNTS
 from .plan import is_race_day
 from .stockage import Store, read_workbook, write_workbook
 
@@ -57,6 +58,7 @@ class Suivi:
     frequence: int | None = None                 # 3 ou 4, choisie par l'élève
     maj_le: str = ""
     notes: dict = field(default_factory=dict)    # identifiant de séance -> Note
+    semaines: dict = field(default_factory=dict) # identifiant de semaine -> nombre de séances choisi (2 à 4)
 
     def with_(self, **changes) -> "Suivi":
         return replace(self, maj_le=_now(), **changes)
@@ -148,9 +150,17 @@ def load_suivi(store: Store, student_id: str) -> Suivi:
         freq = int(float(infos.get("frequence"))) if str(infos.get("frequence", "")).strip() else None
     except ValueError:
         freq = None
+    weeks = {}
+    for _, r in sheets.get("semaines", pd.DataFrame()).iterrows():
+        try:
+            n = int(float(r.get("seances")))
+        except (TypeError, ValueError):
+            continue
+        if isinstance(r.get("week_id"), str) and n in WEEK_COUNTS:
+            weeks[r["week_id"]] = n
     suivi = Suivi(done=done, temps_realise=str(infos.get("temps_realise", "")),
                   frequence=freq if freq in FREQUENCIES else None, maj_le=str(infos.get("maj_le", "")),
-                  notes=notes)
+                  notes=notes, semaines=weeks)
     with _lock:
         _cache[rel] = (version, suivi)
     return suivi
@@ -165,7 +175,9 @@ def save_suivi(store: Store, student_id: str, suivi: Suivi) -> None:
     } for sid in ids], columns=["session_id", "fait", "fait_le", "ressenti", "commentaire", "note_le"])
     infos = pd.DataFrame([("temps_realise", suivi.temps_realise), ("frequence", suivi.frequence or ""),
                           ("maj_le", suivi.maj_le)], columns=["cle", "valeur"])
-    store.write(_file(student_id), write_workbook({"seances": seances, "infos": infos}))
+    semaines = pd.DataFrame([{"week_id": k, "seances": v} for k, v in sorted(suivi.semaines.items())],
+                            columns=["week_id", "seances"])
+    store.write(_file(student_id), write_workbook({"seances": seances, "infos": infos, "semaines": semaines}))
 
 
 # ----------------------------------------------------------------------------
@@ -202,6 +214,20 @@ def set_race_time(store: Store, student_id: str, text: str) -> Suivi:
     """Enregistre le temps réalisé (texte vide = effacer). Lève ValueError si le format est invalide."""
     value = format_race_time_hms(parse_race_time(text)) if str(text or "").strip() else ""
     updated = load_suivi(store, student_id).with_(temps_realise=value)
+    save_suivi(store, student_id, updated)
+    return updated
+
+
+def set_week_count(store: Store, student_id: str, week_id: str, count: int | None) -> Suivi:
+    """Nombre de séances choisi pour UNE semaine (2, 3 ou 4) ; None revient au plan prévu.
+    Les séances retirées sont seulement masquées : elles réapparaissent intactes si on en remet."""
+    suivi = load_suivi(store, student_id)
+    weeks = dict(suivi.semaines)
+    if count in WEEK_COUNTS:
+        weeks[week_id] = int(count)
+    else:
+        weeks.pop(week_id, None)
+    updated = suivi.with_(semaines=weeks)
     save_suivi(store, student_id, updated)
     return updated
 

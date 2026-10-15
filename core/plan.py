@@ -336,21 +336,44 @@ def session_date(week_start: date | None, jour: str, seance: str, race_date: dat
     return None
 
 
+def select_sessions(sub: pd.DataFrame, n: int) -> pd.DataFrame:
+    """Les `n` séances gardées quand l'élève réduit SA semaine (les autres sont seulement masquées).
+
+    Priorité : le jour de course, puis la première et la dernière séance de la semaine, puis les
+    séances du milieu (celles marquées « toujours » avant celles « si 4 séances », puis dans l'ordre).
+    L'ordre d'origine est conservé ; rien n'est modifié dans le plan."""
+    if n >= len(sub):
+        return sub
+    idx = list(range(len(sub)))
+    race = [i for i in idx if is_race_day(sub.iloc[i]["seance"])]
+    middle = sorted(idx[1:-1], key=lambda i: (sub.iloc[i]["frequence"] == FREQ_ONLY_4, i))
+    keep: list[int] = []
+    for i in [*race, idx[0], idx[-1], *middle]:
+        if i not in keep:
+            keep.append(i)
+    return sub.iloc[sorted(keep[:max(n, 0)])]
+
+
 def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
                     race_date: date | None = None, frequency: int | None = None,
-                    hide_empty: bool = False) -> pd.DataFrame:
+                    hide_empty: bool = False, week_counts: dict | None = None) -> pd.DataFrame:
     """Plan complet (ordre chronologique) avec colonnes calculées.
 
     frequency=3 retire les séances marquées « 4 » ; hide_empty retire les séances vides.
+    week_counts {week_id: n} : nombre de séances choisi par l'élève pour une semaine précise ; il
+    remplace la fréquence pour cette semaine seulement (voir select_sessions).
     """
     frames = []
     for _, w in plan.weeks.sort_values("position").iterrows():
         pos = int(w["position"])
         sub = plan.sessions_of(w["week_id"])
-        if frequency == 3:
-            sub = sub[sub["frequence"] != FREQ_ONLY_4]
         if hide_empty:
             sub = sub[[not is_empty_session(r) for _, r in sub.iterrows()]]
+        n = (week_counts or {}).get(w["week_id"])
+        if n:
+            sub = select_sessions(sub.reset_index(drop=True), int(n))
+        elif frequency == 3:
+            sub = sub[sub["frequence"] != FREQ_ONLY_4]
         sub = computed_columns(sub, paces, objective_seconds)
         start = plan.week_start(pos, race_date)
         sub["date"] = [session_date(start, j, se, race_date) for j, se in zip(sub["jour"], sub["seance"])]
@@ -363,6 +386,31 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
         frames.append(sub)
     frames = [f for f in frames if len(f)]
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+ACTIVITY_LABELS = {"course": "Course", "fractionne": "Fractionné", "seuil": "Seuil", "progressif": "Progressif",
+                   "allure": "Allure spécifique", "longue": "Sortie longue", "footing": "Footing"}
+
+
+def activity_kind(row) -> str:
+    """Type d'activité d'une séance, déduit de son libellé, de ses allures et de son contenu."""
+    if is_race_day(row["seance"]):
+        return "course"
+    codes = pace_codes(row.get("allure"))
+    text = clean_text(row.get("contenu")).lower()
+    km = parse_km_range(row.get("km_env"))
+    long_run = km is not None and km[0] >= 15
+    if "progressi" in text:
+        return "progressif"
+    if "Sprint" in codes or "A4" in codes or re.search(r"\d+\s*x\s*\(?\d", text):
+        return "fractionne"
+    if "A3" in codes:
+        return "seuil"
+    if long_run:
+        return "longue"
+    if "A1" in codes or "A2" in codes:
+        return "allure"
+    return "footing"
 
 
 @dataclass(frozen=True)

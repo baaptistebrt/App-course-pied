@@ -48,7 +48,8 @@ def program_state(store: Store, s) -> ProgramState:
     sp = student_paces(s)
     sv = sv_mod.load_suivi(store, s.id)
     freq = sv_mod.effective_frequency(s, sv)
-    table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, freq, hide_empty=True)
+    table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, freq, hide_empty=True,
+                            week_counts=sv.semaines)
     objective = sp.race_seconds if s.objectif else None
     return ProgramState(s, sp, freq, table, sv, sv_mod.progress(table, sv, objective))
 

@@ -25,6 +25,7 @@ from core.plan import weeks_until
 from core.profils import Student
 from ui import composants as ui
 from ui import eleve, supervision
+from ui.parcours import render_editor_routes
 from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render
 
 FREQ_FMT = {3: "3 séances", 4: "4 séances"}
@@ -77,7 +78,8 @@ def render_editor(on_logout) -> None:
     counts = {d: len(profils.list_students(store, d)) for d in DISTANCE_KEYS}
     render(editor_track(counts))
     labels = [f"{DIST_ICONS[d]} {DISTANCES[d].label}" for d in DISTANCE_KEYS]
-    tabs = st.tabs([*labels, ":material/monitoring: Supervision", ":material/settings: Réglages"], key="main_tabs")
+    tabs = st.tabs([*labels, ":material/monitoring: Supervision", ":material/map: Parcours",
+                    ":material/settings: Réglages"], key="main_tabs")
     for tab, d in zip(tabs, DISTANCE_KEYS):
         with tab:
             view = st.segmented_control("Vue", ["Élèves", "Formules", "Modèle de référence"], default="Élèves",
@@ -91,6 +93,8 @@ def render_editor(on_logout) -> None:
     with tabs[len(DISTANCE_KEYS)]:
         supervision.render_overview()
     with tabs[len(DISTANCE_KEYS) + 1]:
+        render_editor_routes()
+    with tabs[len(DISTANCE_KEYS) + 2]:
         render_settings()
 
 
