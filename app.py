@@ -7,7 +7,7 @@ Lancement :  streamlit run app.py
 * Code du coach -> interface éditeur : profils élèves (code envoyé par e-mail), calcul des allures
   par objectif de temps ou par VMA, plans, formules, supervision des séances réalisées.
 * Code d'un élève -> son espace : plan en lecture seule, cases « séance réalisée », temps de course,
-  3 ou 4 séances par semaine, export et impression.
+  2, 3 ou 4 séances par semaine, export et impression.
 
 Organisation du code :
     core/   logique métier, sans Streamlit

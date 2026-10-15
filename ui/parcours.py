@@ -109,17 +109,40 @@ def _geocode(city_key: str):
     return decouverte.geocode(city_key)
 
 
+class _Partial(Exception):
+    """Résultats incomplets : renvoyés par une exception pour ne PAS les garder en mémoire 7 jours."""
+
+    def __init__(self, found: list, notes: list[str]):
+        super().__init__("partiel")
+        self.found, self.notes = found, notes
+
+
 @st.cache_data(ttl=7 * 24 * 3600, show_spinner=False, max_entries=120)
 def _discover(lat: float, lon: float, name: str, label: str, radius: int):
-    return decouverte.discover(decouverte.Place(name, lat, lon, label), radius)
+    notes: list[str] = []
+    found = decouverte.discover(decouverte.Place(name, lat, lon, label), radius, notes=notes)
+    if notes:
+        raise _Partial(found, notes)
+    return found
 
 
-def find_routes(city: str, radius: int) -> tuple[decouverte.Place | None, list[decouverte.FoundRoute]]:
-    """Ville + parcours trouvés (résultats gardés en mémoire 7 jours). Lève DiscoveryError."""
+def find_routes(city: str, radius: int) -> tuple[decouverte.Place | None, list[decouverte.FoundRoute], list[str]]:
+    """(ville, parcours trouvés, messages si les résultats sont incomplets). Les résultats complets sont
+    gardés en mémoire 7 jours. Lève DiscoveryError si aucun service ne répond."""
     place = _geocode(parcours.normalize(city))
     if place is None:
-        return None, []
-    return place, _discover(place.lat, place.lon, place.name, place.label, radius)
+        return None, [], []
+    try:
+        return place, _discover(place.lat, place.lon, place.name, place.label, radius), []
+    except _Partial as partial:
+        return place, partial.found, partial.notes
+
+
+def discovery_error(exc: decouverte.DiscoveryError) -> None:
+    """Message d'erreur lisible + détail technique discret (utile pour le diagnostic)."""
+    st.warning(str(exc), icon="🗺️")
+    if exc.detail:
+        st.caption(f"Détail technique : {exc.detail}")
 
 
 def show_found(place: decouverte.Place, found: list[decouverte.FoundRoute], key: str) -> None:
@@ -178,10 +201,14 @@ def render_student_routes(prefix: str) -> None:
             render("<div class='rt-h'>Conseillés par ton coach</div>" + routes_html(coach))
         try:
             with st.spinner(f"Recherche des parcours autour de {query}…"):
-                place, found = find_routes(query, radius)
+                place, found, notes = find_routes(query, radius)
         except decouverte.DiscoveryError as exc:
-            st.warning(str(exc), icon="🗺️")
+            discovery_error(exc)
+            if coach:
+                st.caption("Les parcours conseillés par ton coach restent affichés ci-dessus.")
             return
+        for note in notes:
+            st.info(note, icon="ℹ️")
         if place is None:
             render(f"<div class='empty'>Ville « {e(query)} » introuvable. Vérifie l'orthographe.</div>")
             return
@@ -223,10 +250,14 @@ def render_editor_routes() -> None:
         if city.strip():
             try:
                 with st.spinner(f"Recherche autour de {city.strip()}…"):
-                    place, found = find_routes(city, radius)
+                    place, found, notes = find_routes(city, radius)
             except decouverte.DiscoveryError as exc:
-                st.warning(str(exc), icon="🗺️")
-                place, found = None, []
+                discovery_error(exc)
+                place, found, notes, failed = None, [], [], True
+            else:
+                failed = False
+            for note in notes:
+                st.info(note, icon="ℹ️")
             if place is not None and found:
                 table = pd.DataFrame([{"Nom": r.name, "Type": r.kind_label, "Distance (km)": r.length_km,
                                        "Boucle": "oui" if r.loop else "non", "Du centre (km)": r.center_km}
@@ -252,7 +283,7 @@ def render_editor_routes() -> None:
                 st.caption(decouverte.ATTRIBUTION)
             elif place is not None:
                 st.caption("Aucun parcours trouvé : essaie un rayon plus grand.")
-            elif city.strip():
+            elif not failed:
                 st.caption("Ville introuvable.")
 
     st.markdown("##### Ajouter un parcours à la main")

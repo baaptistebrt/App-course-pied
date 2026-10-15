@@ -359,7 +359,8 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
                     hide_empty: bool = False, week_counts: dict | None = None) -> pd.DataFrame:
     """Plan complet (ordre chronologique) avec colonnes calculées.
 
-    frequency=3 retire les séances marquées « 4 » ; hide_empty retire les séances vides.
+    frequency=3 retire les séances marquées « 4 » ; frequency=2 garde ensuite 2 séances par semaine
+    (jour de course, première et dernière séance en priorité) ; hide_empty retire les séances vides.
     week_counts {week_id: n} : nombre de séances choisi par l'élève pour une semaine précise ; il
     remplace la fréquence pour cette semaine seulement (voir select_sessions).
     """
@@ -372,8 +373,10 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
         n = (week_counts or {}).get(w["week_id"])
         if n:
             sub = select_sessions(sub.reset_index(drop=True), int(n))
-        elif frequency == 3:
+        elif frequency in (2, 3):
             sub = sub[sub["frequence"] != FREQ_ONLY_4]
+            if frequency == 2:
+                sub = select_sessions(sub.reset_index(drop=True), 2)
         sub = computed_columns(sub, paces, objective_seconds)
         start = plan.week_start(pos, race_date)
         sub["date"] = [session_date(start, j, se, race_date) for j, se in zip(sub["jour"], sub["seance"])]

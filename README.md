@@ -10,12 +10,13 @@ Application Streamlit pour un coach de course à pied.
   séances réalisées et le temps de course de chaque élève.
 - **L'élève** (son code) voit sa **prochaine séance** et sa progression sur un **tour de piste**,
   coche chaque séance réalisée, note son **ressenti** et un commentaire, saisit son **temps de
-  course** et raconte sa course le jour J, choisit 3 ou 4 séances par semaine, exporte et imprime.
+  course** et raconte sa course le jour J, choisit 2, 3 ou 4 séances par semaine, exporte et imprime.
 - Le coach voit **exactement ce que voit l'élève** (onglet « Vue élève » de sa fiche, en lecture seule).
 - Un élève peut avoir **plusieurs programmes** (un par course, avec son **nom de course**), sous le
   même code ; les **courses terminées** sont gardées dans un historique (export Excel).
-- **Mon Planning** (élève) : la semaine en cartes par jour, avec l'**intensité** saisie par le coach ;
-  l'élève choisit **2, 3 ou 4 séances pour une semaine donnée** (« Modifier ma semaine »).
+- **Mon Planning** (élève) : semaine par semaine, les séances en cartes par jour, avec case à cocher,
+  ressenti, **intensité** saisie par le coach, allures en couleur et chrono du jour J ; l'élève choisit
+  2, 3 ou 4 séances par semaine, ou **pour une semaine donnée** (« Modifier ma semaine »).
 - **Analyse de progression** (graphiques Plotly) côté élève et dans la Supervision du coach ;
   **Découverte de parcours** : les parcours existants autour d'une ville, trouvés dans OpenStreetMap.
 
@@ -101,7 +102,9 @@ ensuite. Chaque élève a sa propre copie, modifiable dans sa fiche (« Formules
 
 Dates : la dernière semaine est celle de la course ; chaque séance peut avoir un **jour**
 (lundi… dimanche) qui donne sa date réelle. Fréquence : chaque séance est « Toujours » ou
-« Si 4 séances ». Le coach fixe la fréquence par défaut, l'élève peut la changer.
+« Si 4 séances ». Le coach fixe la fréquence par défaut (**2, 3 ou 4 séances**), l'élève peut la
+changer. À 3 séances, les séances « Si 4 séances » sont retirées ; à 2 séances, on garde en plus la
+première et la dernière séance de chaque semaine (et toujours le jour de course).
 
 ---
 
@@ -123,11 +126,15 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
 
 - **Intensité** : nouvelle colonne du plan (onglet « Plan de l'élève » et modèles), en texte libre,
   ex. « Facile, en aisance respiratoire ». Elle est reprise telle quelle dans Mon Planning.
-- **Mon Planning** (élève) : semaines en onglets soulignés en haut (« 5 oct-11 oct », « Cette
-  semaine »…), séances en cartes arrondies groupées par jour (« AUJOURD'HUI », « MARDI 13 »…), la
-  séance du jour mise en avant, avec une icône colorée selon le type (footing, fractionné, seuil,
-  allure, progressif, sortie longue, course) et « Intensité : … » ; « Modifier ma semaine » en bas. Le jour vient de la colonne
-  « Jour » du plan ; sans jour, la séance est placée à titre indicatif.
+- **Mon Planning** (élève) : il réunit l'ancien onglet « Mon plan » et le planning. En haut : nombre de
+  séances par semaine (2, 3 ou 4) et « Imprimer ou exporter ». Puis les semaines en onglets soulignés
+  (« 5 oct-11 oct », « Cette semaine »…, ✓ quand la semaine est bouclée), l'en-tête de la semaine
+  (dates, volume, séances faites, phase, barre de progression) et les séances en cartes groupées par
+  jour (« AUJOURD'HUI », « MARDI 13 »…) : icône selon le type (footing, fractionné, seuil, allure,
+  progressif, sortie longue, course), **case à cocher**, bouton **Ressenti**, « Intensité : … », km,
+  durée, temps à l'allure, remarque et pastilles d'allure en couleur. Séance faite en vert, séance du
+  jour mise en avant, jour J en jaune avec « Mon chrono ». « Modifier ma semaine » en bas. Le jour vient
+  de la colonne « Jour » du plan ; sans jour, la séance est placée à titre indicatif.
 - **Modifier ma semaine** : 2, 3 ou 4 séances pour la semaine affichée uniquement. En réduisant, les
   séances du milieu sont masquées (la première et la dernière restent, le jour de course aussi) ; elles
   réapparaissent intactes, avec leurs cases cochées et ressentis, si l'élève en remet. Le choix est rangé
@@ -141,6 +148,12 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
   pistes d'athlétisme. Pour chacun : distance réelle du tracé, boucle ou aller simple, distance au
   centre, lien « Ouvrir la carte » et tracé affiché sur une carte ; filtre par distance. Les très longs
   itinéraires (GR nationaux) sont écartés. Les résultats sont gardés 7 jours en mémoire.
+  **Services utilisés** (gratuits, sans clé) : la ville est située par le géocodage de l'**IGN**
+  (Géoplateforme), ou par Nominatim pour une ville hors de France ; les parcours viennent d'**Overpass**
+  et, en secours, de **Postpass** (Geofabrik) et d'autres serveurs Overpass. Ces serveurs publics sont
+  parfois saturés : l'appli passe au suivant, met de côté 5 minutes celui qui vient d'échouer et
+  affiche un message clair (avec un « détail technique » à me transmettre si besoin). Chaque échec
+  est noté dans les journaux de l'appli (share.streamlit.io > ton app > **Manage app**).
   Les parcours **conseillés par le coach** s'affichent en premier : onglet **Parcours**, depuis la
   recherche (« Ajouter la sélection à ma liste ») ou à la main. Fichier `data/parcours.xlsx`.
   La qualité dépend de ce qui est cartographié dans OpenStreetMap pour chaque ville.
@@ -158,19 +171,26 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
   (5 niveaux, de 😣 Très dur à 😄 Excellent) et un mot pour le coach. Chaque séance du plan a aussi
   son bouton « Ressenti ».
 - **Jour J** : carte dédiée avec le temps réalisé, le ressenti et « Raconte ta course ».
-- Onglets **Mon plan** (semaine en cours ouverte, autres semaines repliées), **Mes allures**,
-  **Mon carnet** (toutes les séances faites avec ressentis et commentaires), **Mes courses** (ses courses
-  terminées). S'il a plusieurs programmes, il choisit le programme en haut de la page.
+- Onglets **Mon Planning** (voir partie 7), **Mes allures**, **Mon carnet** (toutes les séances faites
+  avec ressentis et commentaires), **Mes courses** (ses courses terminées), **Ma progression** et
+  **Découverte de parcours**. S'il a plusieurs programmes, il choisit le programme en haut de la page.
 
 ## 9. Suivi et supervision
 
 - Cases cochées, ressentis, commentaires et temps de course sont rangés dans
   `data/suivi/<id>.xlsx`, un fichier que **seul l'élève modifie** : le coach ne peut ni les
   changer ni les effacer en modifiant le plan.
-- Fiche de l'élève, onglet **Suivi** : chiffres clés, carnet de l'élève, semaines avec ✅ et ressentis.
+- Fiche de l'élève, onglet **Suivi** : chiffres clés, puis **Réglages de l'élève** (séances par
+  semaine qu'il a choisies, semaines qu'il a modifiées, date de sa dernière action), puis quatre
+  onglets : **Semaine par semaine** (même présentation que son planning, avec pour chaque séance
+  « ✓ Faite le 13/10 », « Non cochée » ou « À venir », son ressenti et son commentaire),
+  **Carnet**, **Graphiques** (assiduité, volume, ressentis) et **Courses terminées**.
   Onglet **Vue élève** : son espace exactement comme il le voit, en lecture seule.
-- Onglet **Supervision** : tous les élèves (progression, dernière séance, temps réalisé, écart à
-  l'objectif, dernier ressenti).
+- Dans la fiche, si l'élève a choisi un autre nombre de séances que ton réglage, c'est indiqué sous
+  « Séances par semaine (défaut) » : c'est son choix qui s'affiche chez lui.
+- Onglet **Supervision** : tous les programmes en cours (progression, séances par semaine vues par
+  l'élève et semaines modifiées, dernière séance), l'historique des courses, l'analyse de progression
+  et les derniers ressentis.
 - Les exports Excel / CSV / impression de l'élève contiennent ses ressentis et commentaires.
 
 ## 10. Visuels
@@ -207,7 +227,7 @@ core/                 logique métier, sans Streamlit
   historique.py       état d'un programme, courses terminées, export de l'historique
   analyse.py          chiffres de progression (semaines, ressentis, courses)
   parcours.py         parcours conseillés par le coach
-  decouverte.py       parcours existants trouvés dans OpenStreetMap (Nominatim + Overpass)
+  decouverte.py       parcours existants (OpenStreetMap) : géocodage IGN / Nominatim, Overpass / Postpass
   emails.py           envoi du code par e-mail (SMTP)
   stockage.py         fichiers locaux + copie GitHub
   exports.py          Excel, CSV, document imprimable
@@ -216,13 +236,14 @@ ui/                   interface
   design.py           identité visuelle, accueil, tour de piste, couloirs, semaines, carnet
   composants.py       éditeur de plan, éditeurs de formules, exports
   editeur.py          interface coach (distances, réglages)
-  supervision.py      supervision (lecture seule)
-  planning.py         onglet élève « Mon Planning » et « Modifier ma semaine »
+  supervision.py      supervision et onglet Suivi de la fiche (lecture seule)
+  planning.py         « Mon Planning » (élève), « Modifier ma semaine », suivi semaine par semaine (coach)
   progression.py      graphiques de progression (Plotly)
   parcours.py         découverte de parcours (élève) et onglet Parcours (coach)
   eleve.py            espace élève (aussi affiché au coach, en lecture seule)
   assets/             illustration de piste et logo
-tests/                tests automatiques (calculs vs les deux Excel, suivi, e-mails, GitHub simulé)
+tests/                tests automatiques (calculs vs les deux Excel, suivi, e-mails, GitHub simulé,
+                      services de cartes simulés : tests/fake_osm.py)
 ```
 
 Tests : `py -V:3.13 -m pip install pytest aiosmtpd`, puis `py -V:3.13 -m pytest -q`.

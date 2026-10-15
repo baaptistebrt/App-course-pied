@@ -19,9 +19,13 @@ def osm(monkeypatch):
     server = fake_osm.start()
     base = f"http://127.0.0.1:{server.server_port}"
     monkeypatch.setattr(decouverte, "OVERPASS_URLS", [f"{base}/api/interpreter"])
+    monkeypatch.setattr(decouverte, "POSTPASS_URLS", [])
     monkeypatch.setattr(decouverte, "NOMINATIM_URL", f"{base}/search")
+    monkeypatch.setattr(decouverte, "IGN_URL", f"{base}/geocodage/search")
+    monkeypatch.setattr(decouverte, "_DOWN", {})
     fake_osm.FakeOSM.calls = []
-    fake_osm.FakeOSM.fail_overpass = False
+    for flag in ("fail_overpass", "fail_postpass", "fail_ign", "fail_nominatim"):
+        setattr(fake_osm.FakeOSM, flag, False)
     yield base
     server.shutdown()
 

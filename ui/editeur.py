@@ -28,7 +28,7 @@ from ui import eleve, supervision
 from ui.parcours import render_editor_routes
 from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render
 
-FREQ_FMT = {3: "3 séances", 4: "4 séances"}
+FREQ_FMT = {n: f"{n} séances" for n in FREQUENCIES}
 DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:"}
 
 
@@ -158,7 +158,7 @@ def new_student_form(distance: str) -> None:
         c3, c4 = st.columns(2)
         c3.date_input("Date de course (facultatif)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
                       min_value=date.today())
-        c4.radio("Séances par semaine", FREQUENCIES, index=1 if distance != "10k" else 0, horizontal=True,
+        c4.radio("Séances par semaine", FREQUENCIES, index=FREQUENCIES.index(3 if distance == "10k" else 4), horizontal=True,
                  format_func=FREQ_FMT.get, key=f"new_freq_{distance}")
         st.checkbox("Envoyer le code d'accès par e-mail à l'élève", value=email_ready, disabled=not email_ready,
                     key=f"new_send_{distance}",
@@ -347,7 +347,7 @@ def student_panel(s: Student) -> None:
                       type="primary", disabled=not ok, on_click=delete, key=f"del_{s.id}_{ver}", width="stretch",
                       help="Ses autres programmes sont gardés" if others else None)
 
-        c_name, c_date, c_freq, c_info = st.columns([1.3, 1, 1.1, 1.7], vertical_alignment="bottom")
+        c_name, c_date, c_freq = st.columns([1.3, 1, 1.4], vertical_alignment="bottom")
         k_name = f"course_{s.id}_{ver}"
         c_name.text_input("Nom de la course (facultatif)", value=s.course, key=k_name, on_change=on_course,
                           args=(k_name,), placeholder=f"ex. {DISTANCES[s.distance].label} de Lyon 2027")
@@ -357,8 +357,13 @@ def student_panel(s: Student) -> None:
         k_freq = f"freq_{s.id}_{ver}"
         c_freq.segmented_control("Séances par semaine (défaut)", FREQUENCIES, default=s.frequence_defaut,
                                  format_func=FREQ_FMT.get, key=k_freq, on_change=on_freq, args=(k_freq,),
-                                 help="L'élève peut ensuite choisir 3 ou 4 séances dans son espace")
-        with c_info:
+                                 required=True,
+                                 help="L'élève peut ensuite choisir 2, 3 ou 4 séances dans son espace")
+        chosen = suivi.load_suivi(store, s.id).frequence or s.frequence_eleve
+        if chosen and chosen != s.frequence_defaut:
+            c_freq.caption(f"L'élève a choisi **{chosen} séances** dans son espace : c'est ce qu'il voit "
+                           "(détail dans l'onglet Suivi).")
+        with st.container(horizontal=True, vertical_alignment="center"):
             info_weeks(s)
 
     # ---- moteur double : objectif / VMA, comparaison, méthode retenue

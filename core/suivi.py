@@ -55,7 +55,7 @@ class Note:
 class Suivi:
     done: dict = field(default_factory=dict)     # identifiant de séance -> date (AAAA-MM-JJ) de validation
     temps_realise: str = ""                      # « hh:mm:ss »
-    frequence: int | None = None                 # 3 ou 4, choisie par l'élève
+    frequence: int | None = None                 # 2, 3 ou 4, choisie par l'élève
     maj_le: str = ""
     notes: dict = field(default_factory=dict)    # identifiant de séance -> Note
     semaines: dict = field(default_factory=dict) # identifiant de semaine -> nombre de séances choisi (2 à 4)

@@ -99,7 +99,7 @@ ZONE_COLORS: dict[str, tuple[str, str]] = {   # (fond, texte)
 # ----------------------------------------------------------------------------
 # Fréquence d'entraînement
 # ----------------------------------------------------------------------------
-FREQUENCIES: list[int] = [3, 4]
+FREQUENCIES: list[int] = [2, 3, 4]
 # Nombre de séances qu'un élève peut choisir pour UNE semaine donnée (« Modifier ma semaine »).
 WEEK_COUNTS: list[int] = [2, 3, 4]
 # Valeurs de la colonne « frequence » d'une séance.

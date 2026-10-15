@@ -4,8 +4,9 @@ Espace élève.
 En haut : le tour de piste (la préparation = un tour, le tracé jaune avance à chaque séance cochée),
 le compte à rebours et les chiffres clés ; puis la demande de ressenti sur la dernière séance, et la
 carte « Ta prochaine séance » avec son bouton « C'est fait ! » (ou la carte du jour J).
-En dessous, trois onglets : Mon plan (semaines, cases à cocher, ressenti de chaque séance),
-Mes allures, Mon carnet (ressentis et commentaires).
+En dessous, les onglets : Mon Planning (semaine par semaine, séances par jour avec case à cocher,
+ressenti et chrono du jour J, nombre de séances, export), Mes allures, Mon carnet, Mes courses,
+Ma progression et Découverte de parcours.
 
 `render_space` sert aussi au coach : onglet « Vue élève » de la fiche, en lecture seule.
 Tout ce que l'élève modifie est enregistré dans SON fichier de suivi (core/suivi.py), jamais
@@ -26,8 +27,8 @@ from core.plan import is_race_day
 from ui import composants as ui
 from ui import planning, progression, supervision
 from ui.parcours import render_student_routes
-from ui.design import (bib, history_html, journal_html, lap_hero, next_session_html, paces_track, pills, preview_note, race_card_html,
-                       render, session_meta, session_title, week_brief, week_header)
+from ui.design import (bib, history_html, journal_html, lap_hero, next_session_html, paces_track, preview_note,
+                       race_card_html, render, session_title)
 
 FEEL_OPTIONS = list(FEELINGS)
 
@@ -139,8 +140,8 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     def later(session_id: str) -> None:
         st.session_state.setdefault(k("later"), set()).add(session_id)
 
-    def on_freq() -> None:
-        value = st.session_state.get(k("freq"))
+    def on_freq(key: str) -> None:
+        value = st.session_state.get(key)
         if value in FREQUENCIES:
             suivi.set_frequency(store, s.id, value)
             ui.saved(f"Plan affiché pour {value} séances par semaine")
@@ -286,75 +287,48 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         with st.container(key=f"{prefix}-card-next"):
             render("<div class='allset'>Toutes tes séances sont faites. Bravo !</div>")
 
+    # ------------------------------------------------------------------ boutons d'une séance (Mon Planning)
+    def check_box(r) -> None:
+        sid = r["session_id"]
+        ck = k(f"chk_{sid}")
+        callback = {} if readonly else {"on_change": on_check, "args": (sid, ck, int(r["position"]))}
+        st.checkbox(f"**{_md(session_title(r))}**", value=sid in sv.done, key=ck, width="stretch", wrap=True,
+                    disabled=readonly, **callback)
+
+    def feel_button(r) -> None:
+        sid = r["session_id"]
+        note = sv.note(sid)
+        label = f"{note.emoji} Ressenti" if note.emoji else ("💬 Ressenti" if note.commentaire else "Ressenti")
+        with st.popover(label, type="tertiary", key=k(f"pop_{sid}"), wrap=False,
+                        icon=None if (note.emoji or note.commentaire) else ":material/add_comment:"):
+            note_form(sid, k(f"nf_{sid}"))
+
+    def race_button(r) -> None:
+        sid = r["session_id"]
+        with st.popover("Mon chrono", icon=":material/flag:", key=k(f"pop_{sid}"), wrap=False):
+            race_form(r, k(f"race_{sid}"))
+
     # ------------------------------------------------------------------ onglets
-    t_plan, t_planning, t_paces, t_log, t_races, t_prog, t_routes = st.tabs(
-        ["Mon plan", "Mon Planning", "Mes allures", "Mon carnet", "Mes courses", "Ma progression",
-         "Découverte de parcours"], key=k("tabs"))
+    t_planning, t_paces, t_log, t_races, t_prog, t_routes = st.tabs(
+        ["Mon Planning", "Mes allures", "Mon carnet", "Mes courses", "Ma progression", "Découverte de parcours"],
+        key=k("tabs"))
 
     with t_planning:
-        planning.render_planning(s, stt, readonly, prefix)
-
-    with t_plan:
         done_ids = {sid for sid, ok in stt.status.items() if ok}
-        c_freq, c_exp = st.columns([3, 2], vertical_alignment="bottom")
-        c_freq.segmented_control("Séances par semaine", FREQUENCIES, default=stt.frequency, key=k("freq"),
-                                 format_func=lambda n: f"{n} séances", on_change=on_freq, required=True,
+        with st.container(horizontal=True, vertical_alignment="bottom", key=f"{prefix}-plan-tools"):
+            freq_key = k(f"freq{stt.frequency}")      # clé liée à la valeur : suit un changement fait par le coach
+            st.segmented_control("Séances par semaine", FREQUENCIES, default=stt.frequency, key=freq_key,
+                                 format_func=lambda n: f"{n} séances", on_change=on_freq, args=(freq_key,),
+                                 required=True,
                                  disabled=readonly,
-                                 help="Change le nombre de séances affichées. Tes allures ne changent pas.")
-        with c_exp, st.container(horizontal=True, horizontal_alignment="right"):
+                                 help="Change le nombre de séances de toutes tes semaines. Tes allures ne changent "
+                                      "pas. Pour une seule semaine, utilise « Modifier ma semaine » en bas.")
+            st.space("stretch")
             with st.popover("Imprimer ou exporter", icon=":material/print:", key=k("exports")):
                 ui.exports_bar(s, table, sp, stt.frequency, key=prefix, done=done_ids, race_time=pr.race_time,
                                notes=sv.notes, vertical=True)
-
-        open_pos = current
-        if open_pos is None:
-            pending_pos = [int(r["position"]) for _, r in table.iterrows() if not suivi.is_done(r, sv)]
-            open_pos = pending_pos[0] if pending_pos else positions[-1]
-
-        def session_rows(sub) -> None:
-            for _, r in sub.iterrows():
-                sid = r["session_id"]
-                note = sv.note(sid)
-                feel_label = f"{note.emoji} Ressenti" if note.emoji else ("💬 Ressenti" if note.commentaire else "Ressenti")
-                with st.container(horizontal=True, vertical_alignment="center", key=f"{prefix}-ses-{sid}"):
-                    if is_race_day(r["seance"]):
-                        chrono = f" : {pr.race_time}" if pr.race_time else ""
-                        render(f"<div class='racebox' style='margin:0'><div class='what'>🏁 Jour J{chrono}</div>"
-                               f"<div class='sesmeta' style='margin:4px 0 0;padding:0;border:0'>"
-                               f"{session_meta(r, race=True)}{pills(r['allure'], sp.paces)}</div></div>")
-                        with st.popover("Mon chrono", icon=":material/flag:", key=k(f"pop_{sid}")):
-                            race_form(r, k(f"race_{sid}"))
-                        continue
-                    ck = k(f"chk_{sid}")
-                    callback = {} if readonly else {"on_change": on_check, "args": (sid, ck, int(r["position"]))}
-                    st.checkbox(f"**{_md(session_title(r))}**", value=sid in sv.done, key=ck, width="stretch",
-                                disabled=readonly, **callback)
-                    with st.popover(feel_label, type="tertiary", key=k(f"pop_{sid}"),
-                                    icon=None if (note.emoji or note.commentaire) else ":material/add_comment:"):
-                        note_form(sid, k(f"nf_{sid}"))
-                if not is_race_day(r["seance"]):
-                    render(f"<div class='sesmeta'>{session_meta(r)}{pills(r['allure'], sp.paces)}</div>")
-
-        for pos in positions:
-            sub = table[table["position"] == pos]
-            wid = sub["week_id"].iloc[0]
-            n_done = sum(1 for _, r in sub.iterrows() if suivi.is_done(r, sv))
-            if pos == open_pos:
-                head, state = week_header(sub, pos, today, f"{n_done}/{len(sub)} faites")
-                with st.container(key=f"{prefix}-card-wkcur-{wid}"):
-                    render(head)
-                    session_rows(sub)
-                continue
-            first = sub.iloc[0]
-            dates = f", du {fr_date(first['debut'])} au {fr_date(first['fin'])}" if isinstance(first["debut"], date) else ""
-            complete = n_done == len(sub)
-            icon = ":material/check_circle:" if complete else (
-                ":material/radio_button_unchecked:" if (dated and first["fin"] < today) else ":material/schedule:")
-            with st.expander(f"Semaine {pos + 1}{dates} ({n_done}/{len(sub)})", icon=icon, key=k(f"wk_{wid}")):
-                brief = week_brief(sub)
-                if brief:
-                    render(brief)
-                session_rows(sub)
+        planning.render_planning(s, stt, readonly, prefix,
+                                 planning.Controls(check=check_box, feel=feel_button, race=race_button))
 
     with t_paces:
         render(paces_track(sp.paces, ui.basis_text(sp, s)))

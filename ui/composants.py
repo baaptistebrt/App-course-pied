@@ -92,7 +92,7 @@ def column_config() -> dict:
                                    help="Saisi à la main (ex. 27'30). Laisse vide pour le calcul automatique"),
         "frequence": cc.SelectboxColumn("Fréquence", width=105, options=list(FREQ_LABELS), required=True,
                                         default=FREQ_ALWAYS, format_func=lambda f: FREQ_LABELS.get(f, f),
-                                        help="« Si 4 séances » : séance retirée quand l'élève s'entraîne 3 fois"),
+                                        help="« Si 4 séances » : séance retirée quand l'élève s'entraîne 3 fois. À 2 séances, on garde en plus la première et la dernière séance de la semaine"),
         "allure_txt": cc.TextColumn("/km", width=110, disabled=True),
         "temps_auto": cc.TextColumn("Calculé", width=66, disabled=True,
                                     help="Km spé. × allure (utilisé si « Temps spé. » est vide)"),

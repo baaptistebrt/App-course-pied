@@ -8,18 +8,18 @@ le fichier de suivi de l'élève (core/suivi.py), que l'interface coach ne réé
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 
 from core import historique, profils, suivi
 from core.calculs import format_race_time, fr_number
-from core.config import DISTANCES, METHODS
+from core.config import DISTANCES
 from core.profils import Student
 from ui import composants as ui
-from ui import progression
-from ui.design import journal_html, recent_notes_html, render, week_cards
+from ui import planning, progression
+from ui.design import journal_html, recent_notes_html, render
 
 
 def student_state(s: Student) -> historique.ProgramState:
@@ -40,6 +40,57 @@ def history_table(records: list, with_student: bool = True, key: str = "hist") -
                        key=f"dl_{key}", on_click="ignore")
 
 
+def frequency_text(s: Student, stt: historique.ProgramState, short: bool = False) -> str:
+    """Séances par semaine affichées à l'élève, ex. « 2 (élève), 1 sem. modifiée » ou « 4 »."""
+    chosen = stt.suivi.frequence or s.frequence_eleve
+    out = str(stt.frequency)
+    if chosen and chosen != s.frequence_defaut:
+        out += " (élève)" if short else " (choix de l'élève)"
+    n = len(stt.suivi.semaines)
+    if n:
+        out += f", {n} sem. modifiée{'s' if n > 1 else ''}"
+    return out
+
+
+def choices_html(s: Student, stt: historique.ProgramState) -> str:
+    """Ce que l'élève a réglé lui-même dans son espace : séances par semaine, semaines modifiées."""
+    sv = stt.suivi
+    chosen = sv.frequence or s.frequence_eleve
+    items = []
+    if chosen and chosen != s.frequence_defaut:
+        items.append(f"<b>{chosen} séances par semaine</b>, choisi par l'élève (ton réglage : {s.frequence_defaut}). "
+                     "C'est ce qu'il voit dans son planning.")
+    else:
+        items.append(f"<b>{stt.frequency} séances par semaine</b>"
+                     + (", confirmé par l'élève." if chosen else ", ton réglage (l'élève ne l'a pas changé)."))
+    weeks = s.plan.weeks.set_index("week_id") if not s.plan.weeks.empty else None
+    modified = []
+    for week_id, n in sv.semaines.items():
+        if weeks is None or week_id not in weeks.index:
+            continue
+        pos = int(weeks.loc[week_id, "position"])
+        start = s.plan.week_start(pos, s.date_course)
+        when = f" ({start:%d/%m}–{start + timedelta(days=6):%d/%m})" if start else ""
+        natural = planning.natural_count(planning._plan_week_sessions(s, week_id), stt.frequency)
+        modified.append((pos, f"Semaine {pos + 1}{when} : <b>{n} séances</b> au lieu de {natural}"))
+    if modified:
+        items.append("Semaines modifiées par l'élève : " + " ; ".join(t for _, t in sorted(modified)) + ".")
+    else:
+        items.append("Aucune semaine modifiée par l'élève.")
+    if sv.maj_le:
+        items.append(f"Dernière action de l'élève : le {sv.maj_le[8:10]}/{sv.maj_le[5:7]} à {sv.maj_le[11:16]}.")
+    lis = "".join(f"<li>{x}</li>" for x in items)
+    return f"<div class='choices'><div class='ch-t'>Réglages de l'élève</div><ul>{lis}</ul></div>"
+
+
+CHOICES_CSS = """<style>
+.choices { background: #fff; border-radius: 12px; border-left: 6px solid var(--chrono); padding: 12px 18px 8px; }
+.choices .ch-t { font-family: var(--cond); font-weight: 700; font-size: 1.2rem; color: var(--night); }
+.choices ul { margin: 4px 0 0; padding-left: 18px; }
+.choices li { margin: 2px 0 4px; color: var(--night); }
+</style>"""
+
+
 def render_student_suivi(s: Student) -> None:
     """Détail du suivi d'un programme (onglet « Suivi » de sa fiche) et historique de l'élève."""
     stt = student_state(s)
@@ -52,25 +103,25 @@ def render_student_suivi(s: Student) -> None:
               delta_arrow="off" if not pr.race_gap else "auto", border=True,
               help="Écart avec l'objectif (négatif = plus rapide)" if s.objectif else None)
     st.progress(pr.ratio)
-    st.caption(f"Plan affiché pour {stt.frequency} séances par semaine. Les cases, ressentis et commentaires "
-               "sont écrits par l'élève dans son espace ; tu les vois ici en lecture seule.")
-    c_log, c_weeks = st.columns([2, 3], gap="large")
-    with c_log:
-        st.markdown(f"#### Carnet de {s.display_name}")
-        with st.container(border=True, key=f"card-log-{s.id}"):
-            render(journal_html(suivi.journal(stt.table, stt.suivi), pr.race_time))
-    with c_weeks:
-        st.markdown("#### Semaine par semaine")
-        render(week_cards(stt.table, stt.sp.paces, status=stt.status, race_time=pr.race_time,
-                          notes=stt.suivi.notes))
+    st.html(CHOICES_CSS + choices_html(s, stt))
+    st.caption("Les cases, ressentis, commentaires et réglages sont faits par l'élève dans son espace ; tu les vois "
+               "ici en lecture seule. L'onglet « Vue élève » montre exactement son écran.")
+    t_week, t_log, t_charts, t_races = st.tabs(["Semaine par semaine", f"Carnet de {s.display_name}", "Graphiques",
+                                                "Courses terminées"], key=f"sv_tabs_{s.id}")
+    with t_week:
+        planning.render_coach_week(s, stt, f"sv{s.id}")
+    with t_log, st.container(key=f"card-log-{s.id}"):
+        render(journal_html(suivi.journal(stt.table, stt.suivi), pr.race_time))
+    with t_charts:
+        progression.render_program(stt, f"sv_{s.id}")
     store = ui.app_store()
     records = historique.race_history(store, profils.programs_of(store, s))
-    st.markdown(f"#### Courses terminées de {s.display_name}")
-    if records:
-        history_table(records, with_student=False, key=f"hist_{s.id}")
-    else:
-        st.caption("Aucune course terminée pour l'instant : elle apparaîtra ici dès que l'élève aura saisi son "
-                   "temps, ou après la date de la course.")
+    with t_races:
+        if records:
+            history_table(records, with_student=False, key=f"hist_{s.id}")
+        else:
+            st.caption("Aucune course terminée pour l'instant : elle apparaîtra ici dès que l'élève aura saisi son "
+                       "temps, ou après la date de la course.")
 
 
 def render_overview() -> None:
@@ -89,7 +140,8 @@ def render_overview() -> None:
               (f"{' / ' if s.objectif else ''}VMA {fr_number(s.vma)}" if s.vma is not None else "")
         rows.append({"Élève": s.display_name, "Course": s.race_name, "Distance": DISTANCES[s.distance].label,
                      "Date": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
-                     "Méthode": METHODS[stt.sp.method], "Objectif / VMA": ref,
+                     "Méthode": "VMA" if stt.sp.method == "vma" else "Objectif", "Objectif / VMA": ref,
+                     "Séances/sem.": frequency_text(s, stt, short=True),
                      "Progression": round(pr.ratio * 100), "Réalisées": f"{pr.done}/{pr.total}",
                      "Dernière séance": _fmt_day(pr.last_date)})
     st.markdown("#### Programmes en cours")
@@ -97,6 +149,14 @@ def render_overview() -> None:
         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch", column_config={
             "Progression": st.column_config.ProgressColumn("Progression", min_value=0, max_value=100,
                                                            format="%d %%"),
+            "Élève": st.column_config.TextColumn(width="small"),
+            "Méthode": st.column_config.TextColumn(width="small", help="Méthode de calcul des allures retenue"),
+            "Date": st.column_config.TextColumn(width="small"),
+            "Réalisées": st.column_config.TextColumn(width="small"),
+            "Dernière séance": st.column_config.TextColumn("Dernière", width="small",
+                                                           help="Dernière séance cochée"),
+            "Séances/sem.": st.column_config.TextColumn(help="Séances par semaine vues par l'élève ; « (élève) » : "
+                                                             "il a changé ton réglage ; semaines qu'il a modifiées"),
         })
     else:
         st.caption("Aucun programme en cours.")
