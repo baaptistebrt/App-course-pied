@@ -18,7 +18,7 @@ from core.config import FEELINGS
 from ui.design import render
 
 BLUE, ORANGE, GREEN = "#2A6FDB", "#EB6834", "#199E70"
-MISSED, UPCOMING = "#A9B6C6", "#E3E9F0"
+MISSED, UPCOMING, ABSENT = "#A9B6C6", "#E3E9F0", "#F6D77A"
 INK, MUTED, GRID = "#0F2A4A", "#5B6B80", "#E3E9F0"
 CONFIG = {"displayModeBar": False, "responsive": True}
 
@@ -54,7 +54,7 @@ def sessions_chart(weekly: pd.DataFrame) -> go.Figure:
     """Séances faites / manquées / à venir par semaine (barres empilées)."""
     fig = go.Figure()
     for col, name, color in (("faites", "Faites", BLUE), ("manquees", "Manquées", MISSED),
-                             ("a_venir", "À venir", UPCOMING)):
+                             ("excusees", "Absence", ABSENT), ("a_venir", "À venir", UPCOMING)):
         if weekly[col].sum() == 0 and col != "faites":
             continue
         fig.add_bar(x=weekly["semaine"], y=weekly[col], name=name, marker={"color": color,
@@ -156,7 +156,8 @@ def render_program(state, key: str) -> None:
             ("Assiduité", f"{round(adh * 100)} %" if adh is not None else "—"),
             ("Km courus", f"{weekly['km_courus'].sum():.0f}".replace(".", ",")),
             ("Ressenti moyen", FEELINGS[round(avg)][0] + f" {avg:.1f}".replace(".", ",") if avg else "—")])
-    st.caption("Assiduité : séances faites parmi celles déjà prévues à ce jour.")
+    st.caption("Assiduité : séances faites parmi celles déjà prévues à ce jour (celles tombées pendant une absence "
+               "signalée ne comptent pas). Km courus : ceux saisis par l'élève, sinon les km prévus.")
     c1, c2 = st.columns(2, gap="medium")
     with c1, st.container(key=f"card-chart-s-{key}"):
         _show(sessions_chart(weekly), f"ch_s_{key}")
@@ -168,8 +169,8 @@ def render_program(state, key: str) -> None:
     with st.expander("Voir les données de la progression"):
         st.dataframe(weekly.rename(columns={
             "semaine": "Semaine", "periode": "Période", "faites": "Faites", "manquees": "Manquées",
-            "a_venir": "À venir", "km_prevus": "Km prévus", "km_courus": "Km courus"})[
-            ["Semaine", "Période", "Faites", "Manquées", "À venir", "Km prévus", "Km courus"]],
+            "excusees": "Absence", "a_venir": "À venir", "km_prevus": "Km prévus", "km_courus": "Km courus"})[
+            ["Semaine", "Période", "Faites", "Manquées", "Absence", "À venir", "Km prévus", "Km courus"]],
             hide_index=True, width="stretch")
         if not feelings.empty:
             st.dataframe(feelings.rename(columns={"date": "Date", "libelle": "Ressenti", "seance": "Séance",

@@ -8,18 +8,23 @@ le fichier de suivi de l'élève (core/suivi.py), que l'interface coach ne réé
 
 from __future__ import annotations
 
+import html
 from datetime import date, timedelta
 
 import pandas as pd
 import streamlit as st
 
-from core import historique, profils, suivi
+from core import alertes, historique, profils, reponses, suivi
 from core.calculs import format_race_time, fr_number
 from core.config import DISTANCES
+from core.plan import is_race_day
 from core.profils import Student
 from ui import composants as ui
 from ui import planning, progression
-from ui.design import journal_html, recent_notes_html, render
+from ui.coach_reply import reply_popover
+from ui.design import journal_html, render, reply_html, session_title
+
+e = html.escape
 
 
 def student_state(s: Student) -> historique.ProgramState:
@@ -79,6 +84,8 @@ def choices_html(s: Student, stt: historique.ProgramState) -> str:
         items.append("Aucune semaine modifiée par l'élève.")
     if sv.maj_le:
         items.append(f"Dernière action de l'élève : le {sv.maj_le[8:10]}/{sv.maj_le[5:7]} à {sv.maj_le[11:16]}.")
+    if not sv.recap:
+        items.append("Il a désactivé le récap du dimanche par e-mail.")
     lis = "".join(f"<li>{x}</li>" for x in items)
     return f"<div class='choices'><div class='ch-t'>Réglages de l'élève</div><ul>{lis}</ul></div>"
 
@@ -91,10 +98,95 @@ CHOICES_CSS = """<style>
 </style>"""
 
 
-def render_student_suivi(s: Student) -> None:
-    """Détail du suivi d'un programme (onglet « Suivi » de sa fiche) et historique de l'élève."""
+ALERTS_CSS = """<style>
+[class*="st-key-"][class*="card-alert"] { background: #fff; border-radius: 12px; padding: 10px 16px 6px;
+    border-left: 6px solid #3D5A80; }
+[class*="st-key-"][class*="card-alert-rouge"] { border-left-color: #CF2E3F; }
+[class*="st-key-"][class*="card-alert-orange"] { border-left-color: #E2611B; }
+.al-t { font-weight: 700; color: var(--night); }
+.al-w { color: var(--muted); font-size: .88rem; }
+.al-d { color: var(--night); font-size: .93rem; margin-top: 2px; }
+[class*="st-key-"][class*="card-note"] { background: #fff; border-radius: 12px; padding: 10px 16px 4px; }
+</style>"""
+
+
+@st.dialog("Suivi de l'élève", width="large")
+def suivi_dialog(student_id: str) -> None:
+    s = profils.get_student(ui.app_store(), student_id)
+    if s is None:
+        st.error("Ce programme n'existe plus.")
+        return
+    st.markdown(f"### {s.display_name} — {s.race_name}")
+    render_student_suivi(s, where="dlg")
+
+
+def render_alerts(items: list, where: str, show_name: bool = True) -> None:
+    """Cartes « À surveiller » : (état du programme, alerte). Boutons Répondre, Voir le suivi, C'est vu."""
+    store = ui.app_store()
+    st.html(ALERTS_CSS)
+    for n, (stt, a) in enumerate(items):
+        s = stt.student
+
+        def seen(sid: str = s.id, key: str = a.key) -> None:
+            reponses.dismiss_alert(store, sid, key)
+            ui.saved("Alerte marquée comme vue")
+
+        with st.container(key=f"{where}-card-alert-{a.level}-{n}"):
+            who = f"<b>{e(s.display_name)}</b> · {e(s.race_name)} · " if show_name else ""
+            day = f"{a.when[8:10]}/{a.when[5:7]}" if len(a.when) >= 10 else ""
+            render(f"<div class='al-t'>{a.icon} {e(a.title)}</div>"
+                   f"<div class='al-w'>{who}{e(day)}</div>"
+                   + (f"<div class='al-d'>{e(a.detail)}</div>" if a.detail else ""))
+            current = reponses.load_coach(store, s.id).reply(a.reply_key) if a.reply_key else None
+            if current is not None:
+                render(reply_html(current, "Ta réponse"))
+            with st.container(horizontal=True, gap="small"):
+                if a.reply_key:
+                    about = a.title if a.reply_key.startswith("signal:") else _about(stt, a.reply_key)
+                    reply_popover(s, a.reply_key, about, f"{where}_al_{n}")
+                if show_name and st.button("Voir le suivi", icon=":material/visibility:", type="tertiary",
+                                                key=f"{where}_alv_{n}"):
+                    suivi_dialog(s.id)
+                st.button("C'est vu", icon=":material/done:", type="tertiary", key=f"{where}_als_{n}", on_click=seen,
+                          help="L'alerte disparaît ; elle reviendra seulement s'il y a un nouveau signal")
+
+
+def _about(stt, session_id: str) -> str:
+    rows = stt.table[stt.table["session_id"] == session_id] if not stt.table.empty else stt.table
+    if not len(rows):
+        return "une séance"
+    r = rows.iloc[0]
+    return "ta course" if is_race_day(r["seance"]) else session_title(r)
+
+
+def render_reports(s: Student, stt, where: str) -> None:
+    """Signalements de l'élève (douleurs, absences, maladies), avec « Répondre »."""
+    store = ui.app_store()
+    coach = reponses.load_coach(store, s.id)
+    reports = [r for r in stt.suivi.reports if not r.closed or r.closed[:10] >= (date.today() - timedelta(days=30)).isoformat()]
+    if not reports:
+        return
+    st.markdown("##### Signalements de l'élève")
+    st.html(ALERTS_CSS)
+    for rep in reversed(reports):
+        level = "rouge" if rep.kind == "douleur" and not rep.closed else ("orange" if not rep.closed else "info")
+        with st.container(key=f"{where}-card-alert-{level}-rp-{rep.id}"):
+            state = (f"clos le {rep.closed[8:10]}/{rep.closed[5:7]}" if rep.closed else
+                     "à venir" if rep.upcoming() else "en cours")
+            render(f"<div class='al-t'>{e(rep.label)} {e(rep.period)}</div><div class='al-w'>{e(state)}, signalé le "
+                   f"{e(rep.created[8:10])}/{e(rep.created[5:7])}</div>"
+                   + (f"<div class='al-d'>« {e(rep.comment)} »</div>" if rep.comment else "")
+                   + reply_html(coach.reply(reponses.signal_key(rep.id)), "Ta réponse"))
+            reply_popover(s, reponses.signal_key(rep.id), rep.label.lower(), f"{where}_rp_{rep.id}")
+
+
+def render_student_suivi(s: Student, where: str = "fiche") -> None:
+    """Détail du suivi d'un programme (onglet « Suivi » de sa fiche, Supervision) et historique de l'élève.
+    `where` distingue les endroits où ce bloc est affiché (clés des widgets)."""
     stt = student_state(s)
     pr = stt.progress
+    store = ui.app_store()
+    coach = reponses.load_coach(store, s.id)
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Séances réalisées", f"{pr.done} / {pr.total}", border=True)
     c2.metric("Progression", f"{round(pr.ratio * 100)} %", border=True)
@@ -104,34 +196,85 @@ def render_student_suivi(s: Student) -> None:
               help="Écart avec l'objectif (négatif = plus rapide)" if s.objectif else None)
     st.progress(pr.ratio)
     st.html(CHOICES_CSS + choices_html(s, stt))
+    alerts = [(stt, a) for a in alertes.program_alerts(stt, coach) if not a.key.startswith("signal:")]
+    if alerts:
+        st.markdown("##### À surveiller")
+        render_alerts(alerts, f"{where}{s.id}", show_name=False)
+    render_reports(s, stt, f"{where}{s.id}")
     st.caption("Les cases, ressentis, commentaires et réglages sont faits par l'élève dans son espace ; tu les vois "
-               "ici en lecture seule. L'onglet « Vue élève » montre exactement son écran.")
+               "ici. Réponds-lui sous une séance avec « Répondre » : il verra ta réponse dans son planning. L'onglet "
+               "« Vue élève » montre exactement son écran.")
     t_week, t_log, t_charts, t_races = st.tabs(["Semaine par semaine", f"Carnet de {s.display_name}", "Graphiques",
-                                                "Courses terminées"], key=f"sv_tabs_{s.id}")
+                                                "Courses terminées"], key=f"{where}_sv_tabs_{s.id}")
     with t_week:
-        planning.render_coach_week(s, stt, f"sv{s.id}")
-    with t_log, st.container(key=f"card-log-{s.id}"):
-        render(journal_html(suivi.journal(stt.table, stt.suivi), pr.race_time))
+        planning.render_coach_week(s, stt, f"{where}sv{s.id}", coach)
+    with t_log, st.container(key=f"{where}-card-log-{s.id}"):
+        render(journal_html(suivi.journal(stt.table, stt.suivi), pr.race_time, coach.replies))
     with t_charts:
-        progression.render_program(stt, f"sv_{s.id}")
-    store = ui.app_store()
+        progression.render_program(stt, f"{where}_sv_{s.id}")
     records = historique.race_history(store, profils.programs_of(store, s))
     with t_races:
         if records:
-            history_table(records, with_student=False, key=f"hist_{s.id}")
+            history_table(records, with_student=False, key=f"{where}_hist_{s.id}")
         else:
             st.caption("Aucune course terminée pour l'instant : elle apparaîtra ici dès que l'élève aura saisi son "
                        "temps, ou après la date de la course.")
 
 
+def render_watchlist(states: list) -> None:
+    """« À surveiller » : tous les programmes en cours."""
+    store = ui.app_store()
+    items = []
+    for stt in states:
+        if stt.finished():
+            continue
+        items += [(stt, a) for a in alertes.program_alerts(stt, reponses.load_coach(store, stt.student.id))]
+    items.sort(key=lambda x: (alertes.LEVELS[x[1].level], -int((x[1].when or "0000-00-00").replace("-", ""))))
+    st.markdown("#### À surveiller")
+    if not items:
+        st.success("Rien à signaler : pas de douleur, de séance ratée en série ni d'élève inactif.", icon="👍")
+        return
+    st.caption("Les signaux à regarder, calculés à partir de ce que tes élèves ont coché et écrit. « C'est vu » "
+               "retire une alerte (elle revient seulement s'il y a un nouveau signal).")
+    shown = items[:8]
+    render_alerts(shown, "sup")
+    if len(items) > len(shown):
+        with st.expander(f"Voir les {len(items) - len(shown)} autres"):
+            render_alerts(items[len(shown):], "supx")
+
+
+def render_recent_notes(states: list) -> None:
+    """Derniers ressentis de tous les élèves, avec « Répondre »."""
+    store = ui.app_store()
+    recent = []
+    for stt in states:
+        shown = {r["session_id"]: r for _, r in stt.table.iterrows()} if not stt.table.empty else {}
+        recent += [(n.le, stt, shown[sid], n) for sid, n in stt.suivi.notes.items() if sid in shown]
+    if not recent:
+        return
+    st.markdown("#### Derniers ressentis")
+    st.html(ALERTS_CSS)
+    for n, (le, stt, r, note) in enumerate(sorted(recent, key=lambda x: x[0], reverse=True)[:10]):
+        s = stt.student
+        sid = r["session_id"]
+        reply = reponses.load_coach(store, s.id).reply(sid)
+        with st.container(key=f"sup-card-note-{n}"):
+            quote = f"<div class='al-d' style='white-space:pre-wrap'>« {e(note.commentaire)} »</div>" if note.commentaire else ""
+            render(f"<div class='al-t'>{e(s.display_name)} · {e(note.label) or '💬'}</div>"
+                   f"<div class='al-w'>{e(le[8:10])}/{e(le[5:7])} · {e(session_title(r))}, semaine "
+                   f"{int(r['position']) + 1} · {e(s.race_name)}</div>{quote}{reply_html(reply, 'Ta réponse')}")
+            reply_popover(s, sid, _about(stt, sid), f"sup_note_{n}")
+
+
 def render_overview() -> None:
-    """Onglet « Supervision » : tous les élèves, toutes distances, et l'historique des courses."""
+    """Onglet « Supervision » : à surveiller, programmes en cours, historique, analyse, ressentis."""
     store = ui.app_store()
     students = profils.list_students(store)
     if not students:
         st.html("<div class='empty'>Aucun élève pour l'instant : crée un profil dans l'onglet de sa distance.</div>")
         return
     states = [student_state(s) for s in students]
+    render_watchlist(states)
     running = [stt for stt in states if not stt.finished()]
     rows = []
     for stt in running:
@@ -172,22 +315,14 @@ def render_overview() -> None:
         st.caption("Les courses apparaissent ici dès que l'élève a saisi son temps, ou après la date de la course.")
 
     render_progress_analysis(states)
-
-    recent = []
-    for stt in states:
-        shown = {r["session_id"]: r for _, r in stt.table.iterrows()} if not stt.table.empty else {}
-        recent += [(n.le, stt.student.display_name, shown[sid], n) for sid, n in stt.suivi.notes.items() if sid in shown]
-    if recent:
-        st.markdown("#### Derniers ressentis")
-        with st.container(key="card-log-recent"):
-            render(recent_notes_html(sorted(recent, key=lambda x: x[0], reverse=True)[:10]))
+    render_recent_notes(states)
 
     by_id = {stt.student.id: stt.student for stt in states}
     choice = st.selectbox("Voir le détail d'un programme", [None, *by_id], key="sup_detail",
                           format_func=lambda i: "Choisir un élève…" if i is None else
                           f"{by_id[i].display_name} — {by_id[i].race_name}")
     if choice:
-        render_student_suivi(by_id[choice])
+        render_student_suivi(by_id[choice], where="sup")
 
 
 def render_progress_analysis(states: list) -> None:

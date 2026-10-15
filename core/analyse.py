@@ -8,11 +8,12 @@ Aucune donnée nouvelle n'est stockée ici : tout est recalculé à l'affichage.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 
 import pandas as pd
 
 from . import suivi as sv_mod
+from .agenda import session_days
 from .calculs import parse_km_range
 from .config import DISTANCES, FEELINGS
 from .exports import fr_date
@@ -23,35 +24,58 @@ def _km(value) -> float:
     return rng[0] if rng else 0.0
 
 
-def weekly_frame(state, today: date | None = None) -> pd.DataFrame:
-    """Une ligne par semaine du plan affiché : séances faites / manquées / à venir, km prévus et courus.
+WEEKLY_COLUMNS = ["position", "semaine", "periode", "statut", "faites", "manquees", "excusees", "a_venir", "prevues",
+                  "km_prevus", "km_courus"]
 
-    « Manquée » = non cochée dans une semaine terminée. Sans dates (pas de date de course), une
-    séance non cochée est « à venir »."""
+
+def _excused(sv, r, start, day: date | None) -> bool:
+    """Séance non faite pendant une absence ou une maladie signalée par l'élève (jour réel ou conseillé).
+    Sans jour connu, la semaine compte comme « absente » si l'absence en couvre au moins 4 jours."""
+    if day is not None:
+        return sv.absence_on(day) is not None
+    if not isinstance(start, date):
+        return False
+    return sum(1 for i in range(7) if sv.absence_on(start + timedelta(days=i)) is not None) >= 4
+
+
+def weekly_frame(state, today: date | None = None) -> pd.DataFrame:
+    """Une ligne par semaine du plan affiché : séances faites / manquées / excusées / à venir, km prévus
+    et km courus (ceux saisis par l'élève, sinon le bas de la fourchette prévue).
+
+    « Manquée » = marquée « pas faite » par l'élève, ou non cochée dans une semaine terminée.
+    « Excusée » = non faite pendant une absence ou une maladie signalée : elle ne compte pas contre
+    l'assiduité. Sans dates (pas de date de course), une séance non cochée est « à venir »."""
     today = today or date.today()
     table, sv = state.table, state.suivi
     rows = []
     if table.empty:
-        return pd.DataFrame(columns=["position", "semaine", "periode", "statut", "faites", "manquees", "a_venir",
-                                     "prevues", "km_prevus", "km_courus"])
+        return pd.DataFrame(columns=WEEKLY_COLUMNS)
+    days = session_days(state.student, table) if sv.reports else {}
     for pos in sorted(table["position"].unique()):
         sub = table[table["position"] == pos]
         first = sub.iloc[0]
         start, end = first["debut"], first["fin"]
         dated = isinstance(start, date)
         status = ("passee" if end < today else "en_cours" if start <= today else "a_venir") if dated else "sans_date"
-        flags = [sv_mod.is_done(r, sv) for _, r in sub.iterrows()]
-        done = sum(flags)
-        missed = (len(sub) - done) if status == "passee" else 0
+        done = missed = excused = 0
+        km_run = 0.0
+        for _, r in sub.iterrows():
+            if sv_mod.is_done(r, sv):
+                done += 1
+                km_run += sv_mod.km_run(r, sv)
+            elif _excused(sv, r, start, days.get(r["session_id"])):
+                excused += 1
+            elif sv_mod.is_skipped(r, sv) or status == "passee":
+                missed += 1
         rows.append({
             "position": int(pos), "semaine": f"S{int(pos) + 1}",
             "periode": f"du {fr_date(start)} au {fr_date(end)}" if dated else f"Semaine {int(pos) + 1}",
-            "statut": status, "faites": done, "manquees": missed, "a_venir": len(sub) - done - missed,
-            "prevues": len(sub),
+            "statut": status, "faites": done, "manquees": missed, "excusees": excused,
+            "a_venir": len(sub) - done - missed - excused, "prevues": len(sub),
             "km_prevus": round(sum(_km(k) for k in sub["km_env"]), 1),
-            "km_courus": round(sum(_km(k) for k, ok in zip(sub["km_env"], flags) if ok), 1),
+            "km_courus": round(km_run, 1),
         })
-    return pd.DataFrame(rows)
+    return pd.DataFrame(rows, columns=WEEKLY_COLUMNS)
 
 
 def adherence(weekly: pd.DataFrame) -> float | None:
@@ -60,7 +84,7 @@ def adherence(weekly: pd.DataFrame) -> float | None:
         return None
     due = weekly[weekly["statut"].isin(["passee", "en_cours", "sans_date"])]
     if (due["statut"] == "sans_date").all():
-        total = int(due["prevues"].sum())
+        total = int(due["prevues"].sum() - due["excusees"].sum())
         return due["faites"].sum() / total if total else None
     expected = int(due["faites"].sum() + due["manquees"].sum()
                    + due.loc[due["statut"] == "en_cours", "a_venir"].sum())

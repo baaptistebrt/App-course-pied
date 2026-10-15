@@ -61,7 +61,8 @@ def test_ancien_fichier_de_suivi(store):
     assert set(sv.done) == set(ids) and sv.frequence == 4 and not sv.notes
     suivi.set_note(store, s.id, ids[0], 3, "ok")                           # réécrit au nouveau format
     cols = list(read_workbook(store.read(f"suivi/{s.id}.xlsx"))["seances"].columns)
-    assert cols == ["session_id", "fait", "fait_le", "ressenti", "commentaire", "note_le"]
+    assert cols[:6] == ["session_id", "fait", "fait_le", "ressenti", "commentaire", "note_le"]    # v9 : colonnes
+    assert cols[6:] == ["pas_faite_le", "raison", "km_reels"]                                     # ajoutées à la fin
     assert set(suivi.load_suivi(store, s.id).done) == set(ids)
 
 

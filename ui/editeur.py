@@ -9,11 +9,12 @@ from __future__ import annotations
 
 import time
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-from core import historique, profils, referentiel, suivi
+from core import historique, profils, recap, referentiel, reglages, suivi
 from core.auth import load_editor_code
 from core.calculs import (compute_paces, compute_paces_vma, format_race_time, fr_number, normalize_objective,
                           parse_objective, parse_vma)
@@ -529,24 +530,138 @@ def render_template(distance: str) -> None:
 
 
 # =========================================================================== réglages
+RECAP_WORKFLOW = Path(__file__).resolve().parent.parent / "tools" / "github" / "recap.yml"
+
+
+def render_email_settings() -> None:
+    """E-mails : configuration (guide pas à pas), test, adresse du coach, récap du dimanche, alertes."""
+    store = ui.app_store()
+    st.markdown("#### E-mails")
+    cfg = load_email_config()
+    if not cfg:
+        st.warning("**Les e-mails ne sont pas encore configurés** : c'est pour ça que tes élèves ne reçoivent pas "
+                   "leur code. En attendant, le code s'affiche dans la fiche de chaque élève.", icon="✉️")
+        with st.expander("Activer les e-mails (10 minutes, une seule fois)", expanded=True, icon=":material/build:"):
+            st.markdown(
+                "1. Sur ton compte Gmail : **Gérer votre compte Google > Sécurité > Validation en deux étapes**, "
+                "active-la si ce n'est pas déjà fait.\n"
+                "2. Ouvre https://myaccount.google.com/apppasswords, crée un mot de passe d'application nommé "
+                "« Coach running » : Google affiche **16 lettres**, copie-les.\n"
+                "3. Sur **share.streamlit.io**, à droite de ton application : **⋮ > Settings > Secrets**. Ajoute à la "
+                "fin, en remplaçant par tes informations :")
+            st.code('[email]\nuser = "ton.adresse@gmail.com"\npassword = "abcd efgh ijkl mnop"\n'
+                    f'sender_name = "Ton prénom, ton coach"\napp_url = "{app_url() or "https://ton-app.streamlit.app"}"',
+                    language="toml")
+            st.markdown("4. **Save**. L'application redémarre ; reviens ici : un bouton permet de t'envoyer un "
+                        "e-mail de test. Ensuite, renvoie leur code aux élèves déjà créés avec « Envoyer le code par "
+                        "e-mail » dans leur fiche.")
+        return
+    st.success(f"Envoi automatique activé depuis **{cfg.user}** ({cfg.host}).", icon="✉️")
+    st.caption(f"Lien mis dans les e-mails : {cfg.app_url or app_url() or '—'}"
+               + ("" if cfg.app_url else " (ajoute app_url dans les Secrets [email] pour fixer ce lien)"))
+    with st.form("mail_test", border=True):
+        to = st.text_input("Envoyer un e-mail de test à", placeholder="ton.adresse@exemple.fr", value=cfg.user)
+        if st.form_submit_button("Envoyer le test", icon=":material/send:") and to:
+            ok, msg = send_test_email(cfg, to.strip())
+            (st.success if ok else st.error)(msg if ok else msg + " Vérifie l'adresse et le mot de passe "
+                                             "d'application (16 lettres) dans les Secrets.")
+
+    settings = reglages.load_settings(store)
+
+    def save(**changes) -> None:
+        reglages.save_settings(store, reglages.load_settings(store).with_(**changes))
+        ui.saved("Réglage enregistré")
+
+    def on_email(key: str) -> None:
+        value = (st.session_state.get(key) or "").strip()
+        if value and "@" not in value:
+            ui.notify("Adresse e-mail invalide.", "error")
+            return
+        save(coach_email=value)
+
+    def on_flag(name: str, key: str) -> None:
+        save(**{name: bool(st.session_state.get(key))})
+
+    ver = ui.version("settings")
+    k_mail = f"set_coach_email_{ver}"
+    st.text_input("Ton adresse pour les alertes et le bilan du dimanche", value=settings.coach_email, key=k_mail,
+                  placeholder=cfg.user, on_change=on_email, args=(k_mail,),
+                  help="Vide : l'adresse d'envoi ci-dessus")
+    for name, label, help_ in (
+            ("alertes_email", "M'envoyer un e-mail quand un élève signale une douleur ou une absence", None),
+            ("recap_eleves", "Récap du dimanche soir aux élèves (leurs séances de la semaine)",
+             "Chaque élève peut le désactiver dans son espace"),
+            ("recap_coach", "Bilan du dimanche soir pour moi (séances faites, points à surveiller)", None)):
+        key = f"set_{name}_{ver}"
+        st.toggle(label, value=getattr(settings, name), key=key, on_change=on_flag, args=(name, key), help=help_)
+
+    with st.expander("Récap du dimanche : l'essayer et l'automatiser", icon=":material/schedule_send:"):
+        st.markdown("**Aperçu** : reçois maintenant ton bilan et un exemple de récap élève (personne d'autre ne "
+                    "reçoit rien).")
+        if st.button("M'envoyer un aperçu", icon=":material/preview:", key="recap_preview"):
+            with st.spinner("Envoi…"):
+                results = recap.run_weekly(store, cfg, app_url(), preview_to=recap.coach_address(cfg, settings))
+            if not results:
+                st.info("Rien à envoyer : aucune séance datée la semaine prochaine.")
+            for r in results:
+                (st.success if r.ok else st.error)(f"{r.subject} → {r.to} : {r.message}")
+        st.markdown(
+            "**Envoi automatique chaque dimanche** (Streamlit ne sait pas envoyer à heure fixe : c'est GitHub qui "
+            "s'en charge, gratuitement) :\n"
+            "1. Dans ton dépôt **des données** (`App-course-pied-data`) : **Settings > Secrets and variables > "
+            "Actions > New repository secret**. Crée `EMAIL_USER`, `EMAIL_PASSWORD` et `APP_URL` avec les mêmes "
+            "valeurs que dans les Secrets Streamlit.\n"
+            "2. Toujours dans ce dépôt : **Add file > Create new file**, nom `.github/workflows/recap.yml`, colle "
+            "le contenu ci-dessous (ou télécharge-le), puis **Commit changes**.\n"
+            "3. Onglet **Actions** du dépôt > « Récap du dimanche » > **Run workflow** pour l'essayer tout de suite.")
+        if RECAP_WORKFLOW.exists():
+            content = RECAP_WORKFLOW.read_text(encoding="utf-8")
+            st.download_button("Télécharger recap.yml", content, file_name="recap.yml", mime="text/yaml",
+                               icon=":material/download:", on_click="ignore", key="dl_recap_yml")
+            st.code(content, language="yaml")
+
+
+def render_checklist_settings() -> None:
+    """Checklist du jour J, modifiable (une ligne par conseil)."""
+    store = ui.app_store()
+    st.markdown("#### Checklist du jour J")
+    st.caption("Tes élèves la voient la dernière semaine avant leur course, et sur la carte du jour J. Une ligne par "
+               "conseil ; « Pour » permet de réserver un conseil à une distance.")
+    ver = ui.version("checklist")
+    items = reglages.load_checklist(store)
+    df = pd.DataFrame([{"Pour": i.pour, "Moment": i.moment, "Conseil": i.texte} for i in items],
+                      columns=["Pour", "Moment", "Conseil"])
+    edited = st.data_editor(df, key=f"checklist_ed_{ver}", hide_index=True, width="stretch", num_rows="dynamic",
+                            column_config={
+                                "Pour": st.column_config.SelectboxColumn(options=list(reglages.FOR_OPTIONS),
+                                                                         format_func=reglages.FOR_OPTIONS.get,
+                                                                         default="toutes", required=True, width="small"),
+                                "Moment": st.column_config.SelectboxColumn(options=reglages.MOMENTS, required=True,
+                                                                           default=reglages.MOMENTS[0], width="small"),
+                                "Conseil": st.column_config.TextColumn(required=True, max_chars=200, width="large"),
+                            })
+    c1, c2 = st.columns(2)
+    if c1.button("Enregistrer la checklist", type="primary", icon=":material/save:", key=f"ck_save_{ver}",
+                 disabled=edited.equals(df)):
+        new = [reglages.ChecklistItem(str(r["Pour"] or "toutes"), str(r["Moment"] or reglages.MOMENTS[0]),
+                                      str(r["Conseil"]).strip())
+               for _, r in edited.iterrows() if str(r["Conseil"] or "").strip() not in ("", "None", "nan")]
+        reglages.save_checklist(store, new)
+        ui.saved(f"Checklist enregistrée ({len(new)} conseils)")
+        ui.bump("checklist")
+        st.rerun()
+    if c2.button("Revenir à la checklist proposée", key=f"ck_reset_{ver}"):
+        reglages.save_checklist(store, reglages.default_checklist())
+        ui.saved("Checklist proposée rétablie")
+        ui.bump("checklist")
+        st.rerun()
+
+
 def render_settings() -> None:
     store = ui.app_store()
     c_mail, c_img = st.columns(2, gap="large")
     with c_mail:
-        st.markdown("#### E-mails aux élèves")
-        cfg = load_email_config()
-        if cfg:
-            st.success(f"Envoi automatique activé depuis **{cfg.user}** ({cfg.host}).", icon="✉️")
-            st.caption(f"Lien mis dans les e-mails : {cfg.app_url or app_url() or '—'}")
-            with st.form("mail_test", border=True):
-                to = st.text_input("Envoyer un e-mail de test à", placeholder="ton.adresse@exemple.fr")
-                if st.form_submit_button("Envoyer le test", icon=":material/send:") and to:
-                    ok, msg = send_test_email(cfg, to.strip())
-                    (st.success if ok else st.error)(msg)
-        else:
-            st.info("L'envoi automatique n'est pas configuré : les codes s'affichent dans la fiche de chaque élève "
-                    "et tu les transmets toi-même. Pour l'activer, ajoute une section `[email]` dans les Secrets "
-                    "(adresse Gmail + mot de passe d'application) : voir le README.", icon="✉️")
+        render_email_settings()
         st.markdown("#### Sauvegarde")
         if store.mirror:
             st.caption(f"Copie GitHub : `{store.mirror.repo}`"
@@ -586,3 +701,4 @@ def render_settings() -> None:
                     ui.saved("Illustration par défaut rétablie")
                     ui.bump(f"media_{kind}")
                     st.rerun()
+    render_checklist_settings()

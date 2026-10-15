@@ -148,6 +148,7 @@ class FakeOSM(BaseHTTPRequestHandler):
         data = json.dumps(body).encode()
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
@@ -156,9 +157,31 @@ class FakeOSM(BaseHTTPRequestHandler):
         url = urlparse(self.path)
         q = parse_qs(url.query).get("q", [""])[0].strip().lower()
         FakeOSM.calls.append(("GET", q))
+        if url.path.endswith("/geocodage/completion"):
+            text = parse_qs(url.query).get("text", [""])[0].strip().lower()
+            FakeOSM.calls.append(("GET", "completion", text))
+            if FakeOSM.fail_ign:
+                return self._send(500, {"message": "erreur"})
+            res = []
+            if "lilas" in text or text.startswith("12"):
+                lat, lon = _offset(*CENTER, 0.5, 0.3)
+                res.append({"x": lon, "y": lat, "fulltext": "12 Rue des Lilas, 69000 Ville Test", "kind": "housenumber",
+                            "city": "Ville Test", "zipcode": "69000", "classification": 7})
+            if "ville test".startswith(text) or text.startswith("vil"):
+                res.append({"x": CENTER[1], "y": CENTER[0], "fulltext": "Ville Test", "kind": "municipality",
+                            "city": "Ville Test", "classification": 3})
+            return self._send(200, {"status": "OK", "results": res})
         if url.path.endswith("/geocodage/search"):
             if FakeOSM.fail_ign:
                 return self._send(500, {"message": "erreur"})
+            qs = parse_qs(url.query)
+            if "type" not in qs and "lilas" in q:          # adresse précise
+                lat, lon = _offset(*CENTER, 0.5, 0.3)
+                return self._send(200, {"type": "FeatureCollection", "query": q, "features": [
+                    {"type": "Feature", "geometry": {"type": "Point", "coordinates": [lon, lat]},
+                     "properties": {"label": "12 Rue des Lilas 69000 Ville Test", "name": "12 Rue des Lilas",
+                                    "city": "Ville Test", "score": 0.93, "type": "housenumber",
+                                    "context": "69, Rhône, Auvergne-Rhône-Alpes"}}]})
             if q in ("ville test", "lyon", "bordeaux"):
                 return self._send(200, {"type": "FeatureCollection", "query": q, "features": [
                     {"type": "Feature", "geometry": {"type": "Point", "coordinates": [CENTER[1], CENTER[0]]},

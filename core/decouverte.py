@@ -33,6 +33,8 @@ from dataclasses import dataclass, field
 
 # Services (les variables d'environnement servent aux tests et à un serveur personnel éventuel).
 IGN_URL = os.environ.get("PLAN_GEO_IGN_URL", "https://data.geopf.fr/geocodage/search")
+# Suggestions pendant la frappe (adresses et villes), appelées directement par le navigateur.
+IGN_COMPLETION_URL = os.environ.get("PLAN_GEO_IGN_COMPLETION_URL", "https://data.geopf.fr/geocodage/completion")
 NOMINATIM_URL = os.environ.get("PLAN_OSM_NOMINATIM_URL", "https://nominatim.openstreetmap.org/search")
 OVERPASS_URLS = [u for u in (os.environ.get("PLAN_OSM_OVERPASS_URL"),
                              "https://overpass-api.de/api/interpreter",
@@ -81,6 +83,12 @@ class Place:
     lat: float
     lon: float
     label: str
+    kind: str = "ville"         # « ville » ou « adresse » (rue, numéro, lieu précis)
+
+    @property
+    def origin(self) -> str:
+        """« du centre » / « de ton adresse » (distance d'un parcours)."""
+        return "de ton adresse" if self.kind == "adresse" else "du centre"
 
 
 @dataclass(frozen=True)
@@ -218,21 +226,50 @@ def _simple(text: str) -> str:
     return "".join(c for c in text.replace("saint", "st") if c.isalnum())
 
 
-def _geocode_ign(city: str, fetcher) -> tuple[Place | None, bool]:
-    """(commune trouvée par l'IGN, la correspondance est-elle sûre ?)."""
-    data = fetcher(IGN_URL, params={"q": city, "index": "address", "type": "municipality", "limit": 1})
+def _geocode_ign(city: str, fetcher, address: bool = False) -> tuple[Place | None, bool]:
+    """(lieu trouvé par l'IGN, la correspondance est-elle sûre ?). `address` : adresse précise acceptée
+    (numéro, rue), sinon seulement une commune."""
+    params = {"q": city, "index": "address", "limit": 1}
+    if not address:
+        params["type"] = "municipality"
+    data = fetcher(IGN_URL, params=params)
     for feat in (data or {}).get("features") or []:
         props = feat.get("properties") or feat
         coords = (feat.get("geometry") or {}).get("coordinates") or []
         if len(coords) < 2:
             continue
+        precise = str(props.get("type") or "municipality") != "municipality"
         name = str(props.get("name") or props.get("city") or city)
         context = str(props.get("context") or "")
         q, n = _simple(city), _simple(name)
-        sure = float(props.get("score") or 1) >= 0.6 or (bool(q) and (q in n or n in q))
+        score = float(props.get("score") or 1)
+        sure = score >= (0.5 if precise else 0.6) or (bool(q) and (q in n or n in q))
+        if precise:
+            label = str(props.get("label") or name)
+            return Place(name=str(props.get("city") or name), lat=float(coords[1]), lon=float(coords[0]),
+                         label=label, kind="adresse"), sure
         return Place(name=name, lat=float(coords[1]), lon=float(coords[0]),
                      label=f"{name} ({context})" if context else name), sure
     return None, False
+
+
+def complete(text: str, fetcher=fetch, limit: int = 6) -> list[dict]:
+    """Suggestions pour un début d'adresse ou de ville (IGN) : [{label, lat, lon, kind}]. Utilisé côté
+    serveur quand le navigateur ne peut pas appeler l'IGN lui-même."""
+    text = (text or "").strip()
+    if len(text) < 3:
+        return []
+    data = fetcher(IGN_COMPLETION_URL, params={"text": text, "type": "StreetAddress,PositionOfInterest",
+                                               "maximumResponses": limit})
+    out = []
+    for r in (data or {}).get("results") or []:
+        try:
+            out.append({"label": str(r.get("fulltext") or ""), "lat": float(r["y"]), "lon": float(r["x"]),
+                        "kind": "adresse" if r.get("kind") in ("housenumber", "street") else "ville",
+                        "city": str(r.get("city") or r.get("fulltext") or "")})
+        except (KeyError, TypeError, ValueError):
+            continue
+    return [x for x in out if x["label"]]
 
 
 def _geocode_nominatim(city: str, fetcher) -> Place | None:
@@ -246,14 +283,15 @@ def _geocode_nominatim(city: str, fetcher) -> Place | None:
     return None
 
 
-def geocode(city: str, fetcher=fetch) -> Place | None:
-    """Situe une ville (IGN, puis Nominatim). None si elle est introuvable ; DiscoveryError si aucun
-    service de géocodage ne répond."""
+def geocode(city: str, fetcher=fetch, address: bool = False) -> Place | None:
+    """Situe une ville, ou une adresse si `address` (IGN, puis Nominatim). None si elle est introuvable ;
+    DiscoveryError si aucun service de géocodage ne répond."""
     city = (city or "").strip()
     if not city:
         return None
     errors, maybe = [], None
-    for name, finder in (("IGN", _geocode_ign), ("Nominatim", _geocode_nominatim)):
+    ign = (lambda q, f: _geocode_ign(q, f, address)) if address else _geocode_ign
+    for name, finder in (("IGN", ign), ("Nominatim", _geocode_nominatim)):
         try:
             place = finder(city, fetcher)
         except (DiscoveryError, KeyError, TypeError, ValueError, AttributeError) as exc:

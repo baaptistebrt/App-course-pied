@@ -72,12 +72,13 @@ def routes_html(routes: list[parcours.Route]) -> str:
     return "".join(out)
 
 
-def found_html(routes: list[decouverte.FoundRoute]) -> str:
+def found_html(routes: list[decouverte.FoundRoute], origin: str = "du centre") -> str:
     """Parcours trouvés dans OpenStreetMap."""
     out = []
+    near = "passe tout près" if origin != "du centre" else "passe près du centre"
     for r in routes:
         meta = [("boucle" if r.loop else "aller simple") if r.kind != "piste" else "",
-                "passe près du centre" if r.center_km < 0.3 else f"à {str(r.center_km).replace('.', ',')} km du centre"]
+                near if r.center_km < 0.3 else f"à {str(r.center_km).replace('.', ',')} km {origin}"]
         out.append(f"<div class='rt-card'>{_icon(r.kind)}<div class='rt-body'>"
                    f"<div class='rt-name'>{e(r.name)}</div><div class='rt-meta'>{e(', '.join(m for m in meta if m))}</div>"
                    f"<a class='rt-link' href='{e(r.url)}' target='_blank' rel='noopener noreferrer'>Ouvrir la carte</a>"
@@ -105,8 +106,8 @@ def route_map(route: decouverte.FoundRoute) -> go.Figure:
 
 
 @st.cache_data(ttl=7 * 24 * 3600, show_spinner=False, max_entries=300)
-def _geocode(city_key: str):
-    return decouverte.geocode(city_key)
+def _geocode(city_key: str, address: bool = False):
+    return decouverte.geocode(city_key, address=address)
 
 
 class _Partial(Exception):
@@ -117,10 +118,10 @@ class _Partial(Exception):
         self.found, self.notes = found, notes
 
 
-@st.cache_data(ttl=7 * 24 * 3600, show_spinner=False, max_entries=120)
-def _discover(lat: float, lon: float, name: str, label: str, radius: int):
+@st.cache_data(ttl=7 * 24 * 3600, show_spinner=False, max_entries=200)
+def _discover(lat: float, lon: float, name: str, label: str, radius: int, kind: str = "ville"):
     notes: list[str] = []
-    found = decouverte.discover(decouverte.Place(name, lat, lon, label), radius, notes=notes)
+    found = decouverte.discover(decouverte.Place(name, lat, lon, label, kind), radius, notes=notes)
     if notes:
         raise _Partial(found, notes)
     return found
@@ -132,10 +133,17 @@ def find_routes(city: str, radius: int) -> tuple[decouverte.Place | None, list[d
     place = _geocode(parcours.normalize(city))
     if place is None:
         return None, [], []
+    found, notes = routes_around(place, radius)
+    return place, found, notes
+
+
+def routes_around(place: decouverte.Place, radius: int) -> tuple[list[decouverte.FoundRoute], list[str]]:
+    """Parcours autour d'un lieu précis (ville ou adresse). Lève DiscoveryError."""
+    lat, lon = round(place.lat, 4), round(place.lon, 4)      # ~10 m : même cache pour une même adresse
     try:
-        return place, _discover(place.lat, place.lon, place.name, place.label, radius), []
+        return _discover(lat, lon, place.name, place.label, radius, place.kind), []
     except _Partial as partial:
-        return place, partial.found, partial.notes
+        return partial.found, partial.notes
 
 
 def discovery_error(exc: decouverte.DiscoveryError) -> None:
@@ -160,10 +168,10 @@ def show_found(place: decouverte.Place, found: list[decouverte.FoundRoute], key:
             continue
         title = {"course": "Parcours de course", "sportif": "Parcours sportifs", "sentier": "Sentiers balisés",
                  "parc": "Tours de parcs", "piste": "Pistes d'athlétisme"}[kind]
-        render(f"<div class='rt-h'>{title} ({len(group)})</div>" + found_html(group[:8]))
+        render(f"<div class='rt-h'>{title} ({len(group)})</div>" + found_html(group[:8], place.origin))
         if len(group) > 8:
             with st.expander(f"Voir les {len(group) - 8} autres"):
-                render(found_html(group[8:]))
+                render(found_html(group[8:], place.origin))
     by_key = {f"{r.osm_type}/{r.osm_id}": r for r in shown if r.lines}
     if by_key:
         pick = st.selectbox("Voir le tracé sur la carte", list(by_key), key=f"{key}_map",
@@ -175,46 +183,68 @@ def show_found(place: decouverte.Place, found: list[decouverte.FoundRoute], key:
 
 def render_student_routes(prefix: str) -> None:
     """Onglet élève « Découverte de parcours »."""
+    st.html(f"<style>{ROUTES_CSS}</style>")
+    _student_routes(prefix)
+
+
+def _place_from(chosen: dict) -> decouverte.Place | None:
+    """Lieu choisi dans le champ adresse : suggestion (position connue) ou texte tapé (à situer)."""
+    if chosen.get("lat") is not None and chosen.get("lon") is not None:
+        label = str(chosen.get("label") or "")
+        city = str(chosen.get("city") or label.split(",")[-1]).strip()
+        return decouverte.Place(city or label, float(chosen["lat"]), float(chosen["lon"]), label,
+                                "adresse" if chosen.get("kind") == "adresse" else "ville")
+    query = str(chosen.get("query") or chosen.get("label") or "").strip()
+    return _geocode(parcours.normalize(query), address=True) if query else None
+
+
+@st.fragment
+def _student_routes(prefix: str) -> None:
+    """Recherche par adresse (suggestions pendant la frappe) ; seule cette partie se recharge."""
+    from ui.adresse import address_input
+
     store = ui.app_store()
     routes = parcours.load_routes(store)
-    st.html(f"<style>{ROUTES_CSS}</style>")
-    text_key, pick_key = f"{prefix}_rt_city", f"{prefix}_rt_pick"
+    addr_key, pick_key = f"{prefix}_rt_addr", f"{prefix}_rt_pick"
 
-    def picked() -> None:
-        st.session_state[text_key] = st.session_state.get(pick_key) or ""
+    def typed() -> None:
+        st.session_state[pick_key] = None          # une adresse tapée remplace la ville choisie
 
     with st.container(key=f"{prefix}-card-routes"):
-        c_city, c_radius = st.columns([3, 1.4], vertical_alignment="bottom")
-        c_city.text_input("Ta ville", key=text_key, placeholder="ex. Lyon, Bordeaux, Annecy…", icon=":material/search:")
-        radius = c_radius.segmented_control("Rayon", [5, 10, 20], default=10, key=f"{prefix}_rt_radius",
+        c_addr, c_radius = st.columns([3, 1.7], vertical_alignment="bottom")
+        with c_addr:
+            chosen = address_input(addr_key, on_change=typed)
+        radius = c_radius.segmented_control("Rayon", [2, 5, 10, 20], default=5, key=f"{prefix}_rt_radius",
                                             format_func=lambda r: f"{r} km", required=True)
         towns = parcours.cities(routes)
         if towns:
-            st.pills("Villes où ton coach conseille des parcours", towns, key=pick_key, on_change=picked)
-        query = st.session_state.get(text_key, "").strip()
-        if not query:
-            st.caption("Saisis ta ville : l'appli cherche les parcours qui existent autour (parcours balisés, "
-                       "parcs, pistes d'athlétisme) et ceux que ton coach te conseille.")
+            st.pills("Villes où ton coach conseille des parcours", towns, key=pick_key)
+        pick = st.session_state.get(pick_key)
+        if not pick and not chosen:
+            st.caption("Commence à taper ton adresse ou ta ville : choisis une proposition, l'appli cherche les "
+                       "parcours qui existent autour (parcours balisés, parcs, pistes d'athlétisme) et ceux que ton "
+                       "coach te conseille. Ton adresse reste sur ton appareil.")
             return
-        coach = parcours.search(routes, query)
-        if coach:
-            render("<div class='rt-h'>Conseillés par ton coach</div>" + routes_html(coach))
         try:
-            with st.spinner(f"Recherche des parcours autour de {query}…"):
-                place, found, notes = find_routes(query, radius)
+            with st.spinner("Recherche des parcours…"):
+                place = _geocode(parcours.normalize(pick)) if pick else _place_from(chosen)
+                if place is None:
+                    what = pick or (chosen or {}).get("label", "")
+                    render(f"<div class='empty'>« {e(what)} » introuvable. Vérifie l'orthographe ou choisis une "
+                           "des propositions.</div>")
+                    return
+                coach = parcours.search(routes, place.name)
+                if coach:
+                    render("<div class='rt-h'>Conseillés par ton coach</div>" + routes_html(coach))
+                found, notes = routes_around(place, radius)
         except decouverte.DiscoveryError as exc:
             discovery_error(exc)
-            if coach:
-                st.caption("Les parcours conseillés par ton coach restent affichés ci-dessus.")
             return
         for note in notes:
             st.info(note, icon="ℹ️")
-        if place is None:
-            render(f"<div class='empty'>Ville « {e(query)} » introuvable. Vérifie l'orthographe.</div>")
-            return
         if not found:
-            render(f"<div class='empty'>Aucun parcours trouvé autour de {e(place.name)} dans un rayon de {radius} km. "
-                   "Essaie un rayon plus grand.</div>")
+            render(f"<div class='empty'>Aucun parcours trouvé dans un rayon de {radius} km autour de "
+                   f"{e(place.label)}. Essaie un rayon plus grand.</div>")
             return
         show_found(place, found, f"{prefix}_rt")
 

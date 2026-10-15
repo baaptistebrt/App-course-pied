@@ -240,6 +240,7 @@ def delete_student(store: Store, student_id: str) -> None:
     rel = f"{STUDENTS_DIR}/{student_id}.xlsx"
     store.delete(rel)
     store.delete(f"suivi/{student_id}.xlsx")      # suivi de l'élève
+    store.delete(f"coach/{student_id}.xlsx")      # réponses du coach et alertes vues
     with _cache_lock:
         _cache.pop(rel, None)
 

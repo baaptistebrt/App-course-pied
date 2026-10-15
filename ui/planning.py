@@ -19,23 +19,21 @@ from __future__ import annotations
 
 import base64
 import html
-from datetime import date, timedelta
+from datetime import date
 from typing import Callable, NamedTuple
 
 import pandas as pd
 import streamlit as st
 
 from core import suivi
-from core.config import DAYS, PACE_CODES, WEEK_COUNTS, ZONE_COLORS
-from core.plan import (ACTIVITY_LABELS, FREQ_ONLY_4, activity_kind, is_empty_session, is_race_day, pace_codes,
-                       select_sessions)
+from core.agenda import place_sessions, suggested_days, week_plan_sessions  # noqa: F401 (réexportés)
+from core.config import PACE_CODES, WEEK_COUNTS, ZONE_COLORS
+from core.plan import ACTIVITY_LABELS, FREQ_ONLY_4, activity_kind, is_race_day, pace_codes, select_sessions
 from ui import composants as ui
-from ui.design import CHRONO, pills, render, session_title, week_header
+from ui.design import CHRONO, pills, render, reply_html, session_title, week_header
 
 e = html.escape
 WEEKDAYS_FULL = ["LUNDI", "MARDI", "MERCREDI", "JEUDI", "VENDREDI", "SAMEDI", "DIMANCHE"]
-# Jours conseillés quand le coach n'a pas fixé le jour d'une séance (0 = lundi), selon le nombre de séances.
-SUGGESTED_DAYS = {1: [5], 2: [1, 5], 3: [1, 3, 6], 4: [1, 3, 5, 6], 5: [0, 1, 3, 5, 6], 6: [0, 1, 2, 3, 5, 6]}
 DONE_GREEN = "#2F9E6E"
 
 # Icônes (traits, 24 × 24), d'après les jeux libres Feather / Lucide.
@@ -85,12 +83,19 @@ PLANNING_CSS = """
 .pl-meta { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px 14px; align-items: center;
            margin-top: 4px; }
 .pl-note { color: var(--muted); font-size: .82rem; margin: 6px 2px 0; }
+.pl-run { color: #17603F; font-weight: 600; font-size: .9rem; margin-top: 6px; }
+.pl-skip { color: #B4532A; font-weight: 600; font-size: .9rem; margin-top: 6px; }
+.pl-away { color: #3D5A80; font-size: .9rem; margin-top: 6px; }
+[class*="st-key-"][class*="-plf-"] { padding-left: 50px; min-height: 0; }
+[class*="st-key-"][class*="-plf-"] [data-testid="stPopover"] button { min-height: 2rem; padding-top: .15rem;
+    padding-bottom: .15rem; }
 /* « Modifier ma semaine » : lien souligné, centré */
 [class*="st-key-"][class*="plan-edit"] button { border: 0 !important; border-bottom: 3px solid var(--track) !important;
     border-radius: 0 !important; background: transparent !important; padding: 6px 2px !important; }
 [class*="st-key-"][class*="plan-edit"] button p { font-weight: 600; color: var(--night); font-size: .98rem; }
 @media (max-width: 640px) {
   .pl-body { margin-left: 0; }
+  [class*="st-key-"][class*="-plf-"] { padding-left: 0; }
   .pl-meta .pills { justify-content: flex-start; }
   [class*="st-key-"][class*="card-planning"] { padding: 8px 10px 12px; }
   [class*="st-key-"][class*="-plc-"] { padding: 10px 10px 12px; }
@@ -101,9 +106,11 @@ NAV_MONTHS = ["janv", "févr", "mars", "avr", "mai", "juin", "juil", "août", "s
 
 class Controls(NamedTuple):
     """Boutons d'une séance, fournis par l'espace élève (ils enregistrent dans le suivi de l'élève)."""
-    check: Callable[[pd.Series], None]      # case à cocher, avec le titre de la séance
-    feel: Callable[[pd.Series], None]       # bouton « Ressenti »
+    check: Callable[[pd.Series], None]      # case à cocher « faite », avec le titre de la séance
+    feel: Callable[[pd.Series], None]       # bouton « Ressenti » (ressenti, km réels, commentaire)
     race: Callable[[pd.Series], None]       # bouton « Mon chrono » du jour J
+    skip: Callable[[pd.Series], None] | None = None        # bouton « Pas faite »
+    checklist: Callable[[pd.Series], None] | None = None   # bouton « Ma checklist » du jour J
 
 
 def _icon(kind: str, stroke: str = "white") -> str:
@@ -139,43 +146,6 @@ def week_label(sub: pd.DataFrame, today: date) -> str:
     return f"{start.day} {NAV_MONTHS[start.month - 1]}-{end.day} {NAV_MONTHS[end.month - 1]}"
 
 
-def suggested_days(full: pd.DataFrame, race_date: date | None = None) -> dict[str, int]:
-    """Jour (0 = lundi) de chaque séance de la semaine COMPLÈTE prévue par le coach : le jour fixé, sinon
-    un jour conseillé. Calculé sur toutes les séances, pour qu'une séance garde son jour quand l'élève
-    masque les autres."""
-    out = {}
-    for _, r in full.iterrows():
-        if is_race_day(r["seance"]) and race_date:
-            out[r["session_id"]] = race_date.weekday()
-        elif r["jour"] in DAYS:
-            out[r["session_id"]] = DAYS.index(r["jour"])
-    taken = set(out.values())
-    free = [d for d in SUGGESTED_DAYS.get(len(full), list(range(7))) if d not in taken]
-    free += [d for d in range(7) if d not in taken and d not in free]
-    for _, r in full.iterrows():
-        if r["session_id"] not in out:
-            out[r["session_id"]] = free.pop(0) if free else 6
-    return out
-
-
-def place_sessions(sub: pd.DataFrame, days: dict[str, int]) -> tuple[list[tuple[int, date | None, pd.Series]], bool]:
-    """Séances visibles placées sur leur jour. Renvoie ([(jour 0-6, date, séance)], un jour est-il conseillé ?)."""
-    first = sub.iloc[0]
-    start = first["debut"] if isinstance(first["debut"], date) else None
-    placed, suggested = [], False
-    for _, r in sub.iterrows():
-        if isinstance(r["date"], date):
-            wd = r["date"].weekday()
-        elif r["jour"] in DAYS:
-            wd = DAYS.index(r["jour"])
-        else:
-            wd = days.get(r["session_id"], 6)
-            suggested = True
-        placed.append((wd, start + timedelta(days=wd) if start else None, r))
-    placed.sort(key=lambda x: x[0])
-    return placed, suggested
-
-
 def day_label(wd: int, day: date | None, today: date) -> str:
     if day == today:
         return "<div class='pl-day today'>AUJOURD'HUI</div>"
@@ -198,13 +168,41 @@ def session_details(r, paces: dict, race_time: str = "") -> str:
     return f"<div class='pl-body'>{out}</div>" if out else ""
 
 
-def card_style(key: str, kind: str, color: str, is_today: bool, done: bool) -> str:
-    """Couleurs d'une carte : jour J en jaune, séance faite en vert pâle, séance du jour teintée."""
+def status_html(r, state, day: date | None, coach=None, who: str = "Ton coach", show_skip: bool = True) -> str:
+    """Sous les détails : km réellement courus, « pas faite », absence signalée, réponse du coach."""
+    sv = state.suivi
+    sid = r["session_id"]
+    done = suivi.is_done(r, sv)
+    parts = []
+    km = sv.km.get(sid)
+    if km and done:
+        planned = f" (prévu {e(str(r['km_env']))} km)" if r["km_env"] else ""
+        parts.append(f"<div class='pl-run'>✓ {suivi.fr_km(km)} km courus{planned}</div>")
+    skip = sv.skipped.get(sid) if not done else None
+    if skip is not None and show_skip:
+        parts.append(f"<div class='pl-skip'>✗ Pas faite{' : ' + e(skip.raison) if skip.raison else ''}</div>")
+    away = sv.absence_on(day) if (day is not None and not done) else None
+    if away is not None:
+        parts.append(f"<div class='pl-away'>🏖️ {e(away.label)} signalée {e(away.period)}</div>")
+    reply = coach.reply(sid) if coach is not None else None
+    if reply is not None:
+        parts.append(reply_html(reply, who))
+    return f"<div class='pl-body'>{''.join(parts)}</div>" if parts else ""
+
+
+def card_style(key: str, kind: str, color: str, is_today: bool, done: bool, skipped: bool = False,
+               away: bool = False) -> str:
+    """Couleurs d'une carte : jour J en jaune, séance faite en vert pâle, « pas faite » en rouge pâle,
+    absence en gris, séance du jour teintée."""
     sel = f'[class*="st-key-"][class*="{key}"]'
     if kind == "course":
         return f"{sel} {{ background: #FFF6D6; border: 2px solid {CHRONO}; }}"
     if done:
         return f"{sel} {{ background: #F3FAF6; border-color: #BFE3D0; }}"
+    if skipped:
+        return f"{sel} {{ background: #FDF4F1; border-color: #F1C9BC; }}"
+    if away:
+        return f"{sel} {{ background: #F6F8FB; border-style: dashed; }}"
     if is_today:
         return f"{sel} {{ background: {_tint(color, .12)}; border-color: {color}; box-shadow: 0 0 0 1px {color}; }}"
     return ""
@@ -218,10 +216,7 @@ def icon_html(kind: str, color: str, filled: bool) -> str:
     return f"<span class='pl-ico' title='{label}' style='background:{_tint(color, .14)}'>{_icon(kind, color)}</span>"
 
 
-def _plan_week_sessions(student, week_id: str) -> pd.DataFrame:
-    """Toutes les séances prévues par le coach pour cette semaine (hors séances vides)."""
-    sub = student.plan.sessions_of(week_id)
-    return sub[[not is_empty_session(r) for _, r in sub.iterrows()]]
+_plan_week_sessions = week_plan_sessions      # ancien nom, gardé pour compatibilité
 
 
 def natural_count(plan_sessions: pd.DataFrame, frequency: int) -> int:
@@ -259,13 +254,20 @@ def _edit_week(student_id: str, week_id: str, label: str, available: int, curren
         st.rerun()
 
 
-def _session_card(r, day: date | None, today: date, state, prefix: str, controls: Controls) -> str:
-    """Une carte de séance (widgets Streamlit). Renvoie sa règle de style."""
+def _session_card(r, day: date | None, today: date, state, prefix: str, controls: Controls, coach=None) -> str:
+    """Une carte de séance (widgets Streamlit). Renvoie sa règle de style.
+
+    En haut : icône + case « faite » avec le titre (jour J : titre + « Mon chrono ») ; au milieu : intensité,
+    km, durée, allures, puis km réels, « pas faite », absence, réponse du coach ; en bas : « Pas faite »
+    et « Ressenti » (jour J : « Ma checklist »)."""
     sid = r["session_id"]
     kind = activity_kind(r)
     color, _ = _color(r, kind)
     is_today = day == today
-    done = suivi.is_done(r, state.suivi)
+    sv = state.suivi
+    done = suivi.is_done(r, sv)
+    skipped = suivi.is_skipped(r, sv)
+    away = day is not None and not done and sv.absence_on(day) is not None
     key = f"{prefix}-plc-{sid}"
     with st.container(key=key):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", wrap=False):
@@ -276,11 +278,18 @@ def _session_card(r, day: date | None, today: date, state, prefix: str, controls
                 controls.race(r)
             else:
                 controls.check(r)
-                controls.feel(r)
-        details = session_details(r, state.sp.paces)
+        details = session_details(r, state.sp.paces) + status_html(r, state, day, coach)
         if details:
             render(details)
-    return card_style(f"-plc-{sid}", kind, color, is_today, done)
+        with st.container(horizontal=True, gap="small", vertical_alignment="center", key=f"{prefix}-plf-{sid}"):
+            if kind == "course":
+                if controls.checklist is not None:
+                    controls.checklist(r)
+            else:
+                if controls.skip is not None and not done:
+                    controls.skip(r)
+                controls.feel(r)
+    return card_style(f"-plc-{sid}", kind, color, is_today, done, skipped, away)
 
 
 def week_nav(table: pd.DataFrame, sv, today: date, key: str) -> tuple[int, pd.DataFrame, int]:
@@ -331,8 +340,8 @@ def center_nav(key: str) -> None:
 </script>""", unsafe_allow_javascript=True)
 
 
-def render_planning(student, state, readonly: bool, prefix: str, controls: Controls) -> None:
-    """Contenu de l'onglet « Mon Planning »."""
+def render_planning(student, state, readonly: bool, prefix: str, controls: Controls, coach=None) -> None:
+    """Contenu de l'onglet « Mon Planning ». `coach` : réponses du coach (core/reponses.CoachFile)."""
     table, sv = state.table, state.suivi
     today = date.today()
     st.html(f"<style>{PLANNING_CSS}</style>")
@@ -352,7 +361,7 @@ def render_planning(student, state, readonly: bool, prefix: str, controls: Contr
             if wd != current:
                 current = wd
                 render(day_label(wd, day, today))
-            styles.append(_session_card(r, day, today, state, prefix, controls))
+            styles.append(_session_card(r, day, today, state, prefix, controls, coach))
         st.html(f"<style>{''.join(s for s in styles if s)}</style>")
         if suggested:
             render("<div class='pl-note'>Ton coach n'a pas fixé le jour de certaines séances : elles sont placées "
@@ -377,19 +386,23 @@ def _fr_day(iso: str) -> str:
     return f"{iso[8:10]}/{iso[5:7]}" if len(iso) >= 10 else ""
 
 
-def coach_card_html(r, day: date | None, today: date, state) -> str:
-    """Carte d'une séance pour le coach : statut (faite le…, non cochée, à venir), contenu, ressenti."""
+def coach_card_html(r, day: date | None, today: date, state, coach=None) -> str:
+    """Carte d'une séance pour le coach : statut (faite le…, pas faite, non cochée, à venir), contenu,
+    ressenti, km réels, absence et sa propre réponse."""
     sv = state.suivi
     sid = r["session_id"]
     kind = activity_kind(r)
     color, _ = _color(r, kind)
     race = kind == "course"
     done = suivi.is_done(r, sv)
+    skip = sv.skipped.get(sid) if not done else None
     if race and sv.temps_realise:
         status, cls = f"🏁 {state.progress.race_time}", "ok"
     elif done:
         when = _fr_day(str(sv.done.get(sid, "")))
         status, cls = f"✓ Faite{f' le {when}' if when else ''}", "ok"
+    elif skip is not None:
+        status, cls = f"✗ Pas faite{f' ({skip.raison})' if skip.raison else ''}", "miss"
     elif day is not None and day < today:
         status, cls = "Non cochée", "miss"
     elif day == today:
@@ -402,11 +415,12 @@ def coach_card_html(r, day: date | None, today: date, state) -> str:
     if not note.empty:
         quote = f" <q>{e(note.commentaire)}</q>" if note.commentaire else ""
         feel = f"<div class='pl-feel'>{e(note.label) or '💬'}{quote}</div>"
+    extra = status_html(r, state, day, coach, who="Ta réponse", show_skip=False).replace("pl-body", "pl-body flat")
     card_cls = "race" if race else ("done" if done else ("miss" if cls == "miss" else ""))
     return (f"<div class='pl-card {card_cls}'>{icon_html(kind, color, filled=race or day == today)}"
             f"<div class='pl-main'><div class='pl-top'><span class='pl-title'>{title}</span>"
             f"<span class='pl-status {cls}'>{e(status)}</span></div>"
-            f"{session_details(r, state.sp.paces).replace('pl-body', 'pl-body flat')}{feel}</div></div>")
+            f"{session_details(r, state.sp.paces).replace('pl-body', 'pl-body flat')}{feel}{extra}</div></div>")
 
 
 COACH_CSS = """
@@ -428,12 +442,15 @@ COACH_CSS = """
 .pl-feel { margin-top: 6px; font-size: .92rem; color: var(--night); }
 .pl-feel q { quotes: none; display: block; border-left: 3px solid var(--chrono); padding: 1px 0 1px 10px; margin-top: 4px;
              white-space: pre-wrap; font-style: italic; }
+[class*="st-key-"][class*="-ccr-"] { margin-top: -6px; }
 """
 
 
-def render_coach_week(student, state, key: str) -> None:
-    """Suivi du coach, semaine par semaine : même présentation que le planning de l'élève, en lecture
-    seule, avec le statut de chaque séance et les ressentis."""
+def render_coach_week(student, state, key: str, coach=None) -> None:
+    """Suivi du coach, semaine par semaine : même présentation que le planning de l'élève, avec le statut
+    de chaque séance, les ressentis, les km réels, et un bouton « Répondre » sous chaque séance."""
+    from ui.coach_reply import reply_popover      # import local : évite un import circulaire
+
     table, sv = state.table, state.suivi
     today = date.today()
     st.html(f"<style>{PLANNING_CSS}{COACH_CSS}</style>")
@@ -448,16 +465,19 @@ def render_coach_week(student, state, key: str) -> None:
         extra = ""
         if week_id in sv.semaines:
             extra = f", semaine réduite par l'élève à {len(sub)} (au lieu de {natural_count(plan_sessions, state.frequency)})"
-        out = [week_head_html(sub, pos, today, n_done, extra)]
+        render(week_head_html(sub, pos, today, n_done, extra))
         placed, suggested = place_sessions(sub, suggested_days(plan_sessions, student.date_course))
         current = None
         for wd, day, r in placed:
             if wd != current:
                 current = wd
-                out.append(day_label(wd, day, today))
-            out.append(coach_card_html(r, day, today, state))
+                render(day_label(wd, day, today))
+            sid = r["session_id"]
+            render(coach_card_html(r, day, today, state, coach))
+            with st.container(horizontal=True, horizontal_alignment="right", key=f"{key}-ccr-{sid}"):
+                about = "ta course" if is_race_day(r["seance"]) else session_title(r)
+                reply_popover(student, sid, about, f"{key}_rep_{sid}")
         if suggested:
-            out.append("<div class='pl-note'>Jour non fixé dans le plan pour certaines séances : placées à titre "
-                       "indicatif, comme dans l'espace de l'élève.</div>")
-        render("".join(out))
+            render("<div class='pl-note'>Jour non fixé dans le plan pour certaines séances : placées à titre "
+                   "indicatif, comme dans l'espace de l'élève.</div>")
     center_nav(nav_key)

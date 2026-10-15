@@ -252,6 +252,12 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .log .chrono small { font-family: Barlow, sans-serif; font-size: .9rem; font-weight: 600; color: var(--muted);
                      margin-left: 8px; }
 .log .chrono small.faster { color: #17603F; }
+.log .skip { display: inline-block; color: #B4532A; font-weight: 600; font-size: .9rem; margin-right: 10px; }
+.coach-reply { background: #FFF8E1; border-left: 4px solid var(--chrono); border-radius: 8px; padding: 7px 12px;
+               margin-top: 8px; color: var(--night); font-size: .93rem; white-space: pre-wrap; }
+.coach-reply b { font-weight: 700; margin-right: 8px; }
+.coach-reply .cr-d { color: var(--muted); font-size: .8rem; }
+.coach-reply div { margin-top: 2px; }
 .feel { color: var(--muted); font-size: .9rem; }
 .feel q { quotes: none; font-style: italic; }
 [class*="st-key-"][class*="card-race"] [data-testid="stForm"],
@@ -559,8 +565,18 @@ def race_card_html(r, paces: dict[str, Pace], when: str, race_time: str) -> str:
             f"{pace_lane_rows(r['allure'], paces)}</div>")
 
 
-def journal_html(entries: list[dict], race_time: str = "") -> str:
-    """Carnet : séances réalisées ou commentées, avec ressenti et commentaire."""
+def reply_html(reply, who: str = "Ton coach") -> str:
+    """Réponse du coach (bloc jaune)."""
+    if reply is None:
+        return ""
+    return (f"<div class='coach-reply'><b>💬 {e(who)}</b>"
+            f"<span class='cr-d'>{e(reply.le[8:10] + '/' + reply.le[5:7]) if len(reply.le) >= 10 else ''}</span>"
+            f"<div>{e(reply.texte)}</div></div>")
+
+
+def journal_html(entries: list[dict], race_time: str = "", replies: dict | None = None) -> str:
+    """Carnet : séances réalisées, « pas faites » ou commentées, avec ressenti, commentaire, km réels et
+    réponse du coach."""
     if not entries:
         return ("<div class='empty'>Ton carnet se remplit au fil des séances : coche une séance faite, puis dis "
                 "comment tu l'as sentie.</div>")
@@ -572,10 +588,21 @@ def journal_html(entries: list[dict], race_time: str = "") -> str:
         chrono = f"<div class='chrono'>{e(race_time)}</div>" if x["race"] and race_time else ""
         feel = f"<span class='f'>{e(note.label)}</span>" if note.ressenti else ""
         quote = f"<q>{e(note.commentaire)}</q>" if note.commentaire else ""
-        status = "" if x["done"] else "<span class='w'>pas encore cochée</span>"
+        skip = x.get("skip")
+        km = x.get("km")
+        if skip is not None:
+            status = f"<span class='skip'>✗ Pas faite{' : ' + e(skip.raison) if skip.raison else ''}</span>"
+        elif not x["done"]:
+            status = "<span class='w'>pas encore cochée</span>"
+        else:
+            status = ""
+        km_html = (f"<span class='w'>{e(str(km).replace('.', ','))} km courus"
+                   f"{' (prévu ' + e(str(r['km_env'])) + ')' if r['km_env'] else ''}</span>") if km else ""
+        reply = reply_html((replies or {}).get(r["session_id"]))
         items.append(f"<li class='{'race' if x['race'] else ''}'><div class='d'>{e(fr_date(d, weekday=True)) if d else ''}</div>"
                      f"<div><div class='t'>{'🏁 ' if x['race'] else ''}{e(title)}</div>"
-                     f"<div class='w'>Semaine {int(r['position']) + 1}</div>{chrono}{feel}{quote}{status}</div></li>")
+                     f"<div class='w'>Semaine {int(r['position']) + 1}</div>{chrono}{status}{km_html}{feel}{quote}"
+                     f"{reply}</div></li>")
     return f"<ul class='log'>{''.join(items)}</ul>"
 
 

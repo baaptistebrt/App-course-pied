@@ -20,11 +20,12 @@ from datetime import date
 
 import streamlit as st
 
-from core import historique, profils, suivi
+from core import historique, profils, records, reponses, suivi
 from core.config import COMMENT_MAX, DISTANCES, FEELINGS, FREQUENCIES
 from core.exports import fr_date
 from core.plan import is_race_day
 from ui import composants as ui
+from ui import eleve_extras as extras
 from ui import planning, progression, supervision
 from ui.parcours import render_student_routes
 from ui.design import (bib, history_html, journal_html, lap_hero, next_session_html, paces_track, preview_note,
@@ -95,7 +96,9 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     store = ui.app_store()
     stt = supervision.student_state(s)
     sp, pr, sv, table = stt.sp, stt.progress, stt.suivi, stt.table
+    coach = reponses.load_coach(store, s.id)
     today = date.today()
+    extras.css()
 
     def k(name: str) -> str:
         return f"{prefix}_{name}"
@@ -121,9 +124,28 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             suivi.set_done(store, s.id, session_id, False)
             ui.saved("Séance décochée")
 
-    def save_note(session_id: str, feel_key: str, text_key: str) -> None:
-        suivi.set_note(store, s.id, session_id, st.session_state.get(feel_key), st.session_state.get(text_key, ""))
+    def save_note(session_id: str, feel_key: str, text_key: str, km_key: str | None = None) -> None:
+        km = st.session_state.get(km_key, "") if km_key else suivi._KEEP
+        try:
+            suivi.set_note(store, s.id, session_id, st.session_state.get(feel_key), st.session_state.get(text_key, ""),
+                           km=km)
+        except ValueError as exc:
+            ui.notify(str(exc), "error")
+            return
         ui.saved("Ressenti enregistré : ton coach le verra")
+
+    def save_skip(session_id: str, reason_key: str, text_key: str) -> None:
+        reason = st.session_state.get(reason_key) or ""
+        suivi.set_skipped(store, s.id, session_id, reason)
+        text = (st.session_state.get(text_key) or "").strip()
+        note = suivi.load_suivi(store, s.id).note(session_id)
+        if text != note.commentaire:
+            suivi.set_note(store, s.id, session_id, note.ressenti, text)
+        ui.saved("C'est noté : séance pas faite" + (f" ({reason.lower()})" if reason else ""))
+
+    def cancel_skip(session_id: str) -> None:
+        suivi.set_skipped(store, s.id, session_id, None)
+        ui.saved("Séance remise à faire")
 
     def save_race(session_id: str, time_key: str, feel_key: str, text_key: str) -> None:
         typed = st.session_state.get(time_key, "")
@@ -135,6 +157,10 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         suivi.set_note(store, s.id, session_id, st.session_state.get(feel_key), st.session_state.get(text_key, ""))
         if str(typed).strip():
             st.session_state[k("party")] = True
+            best = records.is_record(historique.race_history(store, profils.programs_of(store, s)), s.id)
+            if best is not None:
+                ui.saved(f"Nouveau record personnel sur {best.label} : {best.time_str} ! 🥇")
+                return
         ui.saved("Course enregistrée, bravo !")
 
     def later(session_id: str) -> None:
@@ -150,17 +176,39 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         st.balloons()
 
     # ------------------------------------------------------------------ formulaires
-    def note_form(session_id: str, form_key: str, submit: str = "Enregistrer", compact: bool = False) -> None:
+    def note_form(r, form_key: str, submit: str = "Enregistrer", compact: bool = False) -> None:
+        session_id = r["session_id"]
         note = sv.note(session_id)
-        fk, tk = f"{form_key}_feel", f"{form_key}_text"
+        fk, tk, kk = f"{form_key}_feel", f"{form_key}_text", f"{form_key}_km"
         with st.form(form_key, border=False):
             st.pills("Comment tu l'as sentie ?", FEEL_OPTIONS, default=note.ressenti, format_func=_feel, key=fk,
                      disabled=readonly, label_visibility="collapsed" if compact else "visible")
+            planned = str(r["km_env"] or "").strip()
+            km = sv.km.get(session_id)
+            st.text_input("Km réellement courus (si différent du plan)", key=kk, disabled=readonly,
+                          value=suivi.fr_km(km) if km else "",
+                          placeholder=f"prévu : {planned} km" if planned else "ex. 8,5")
             st.text_area("Un mot pour ton coach (facultatif)", value=note.commentaire, key=tk, max_chars=COMMENT_MAX,
                          height=72 if compact else 96, placeholder="Jambes, souffle, météo, douleurs…",
                          disabled=readonly)
             st.form_submit_button(submit, type="primary", icon=":material/check:", disabled=readonly,
-                                  on_click=save_note, args=(session_id, fk, tk))
+                                  on_click=save_note, args=(session_id, fk, tk, kk))
+
+    def skip_form(r, form_key: str) -> None:
+        sid = r["session_id"]
+        current = sv.skipped.get(sid)
+        note = sv.note(sid)
+        rk, tk = f"{form_key}_reason", f"{form_key}_text"
+        with st.form(form_key, border=False):
+            st.pills("Pourquoi ?", suivi.SKIP_REASONS, default=current.raison if current and current.raison in
+                     suivi.SKIP_REASONS else None, key=rk, disabled=readonly)
+            st.text_area("Un mot pour ton coach (facultatif)", value=note.commentaire, key=tk, max_chars=COMMENT_MAX,
+                         height=72, placeholder="Ce qui s'est passé, comment tu te sens…", disabled=readonly)
+            st.form_submit_button("Enregistrer", type="primary", icon=":material/check:", disabled=readonly,
+                                  on_click=save_skip, args=(sid, rk, tk))
+        if current is not None:
+            st.button("Annuler : elle reste à faire", type="tertiary", key=f"{form_key}_undo", disabled=readonly,
+                      on_click=cancel_skip, args=(sid,))
 
     def race_form(r, form_key: str) -> None:
         note = sv.note(r["session_id"])
@@ -243,6 +291,11 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         render("<div class='empty'>Ton plan ne contient encore aucune séance : ton coach le prépare.</div>")
         return
 
+    # ------------------------------------------------------------------ messages du coach, signalements, checklist
+    extras.replies_card(s, sv, coach, table, readonly, prefix)
+    extras.reports_banner(s, sv, coach, readonly, prefix)
+    extras.checklist_card(s, sv, readonly, prefix, days_left)
+
     # ------------------------------------------------------------------ ressenti de la dernière séance
     pending = suivi.pending_feedback(table, sv, today)
     if pending is not None and pending["session_id"] not in st.session_state.get(k("later"), set()):
@@ -255,7 +308,7 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         with st.container(key=f"{prefix}-card-feel"):
             render(f"<div class='ask'>Ta séance {when} : comment tu l'as sentie ?"
                    f"<small>{session_title(pending)}</small></div>")
-            note_form(sid, k(f"pf_{sid}"), "Enregistrer mon ressenti", compact=True)
+            note_form(pending, k(f"pf_{sid}"), "Enregistrer mon ressenti", compact=True)
             st.button("Plus tard", type="tertiary", key=k(f"later_{sid}"), on_click=later, args=(sid,),
                       disabled=readonly)
 
@@ -283,6 +336,10 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             st.button("C'est fait !", type="primary", icon=":material/check:", key=k(f"done_{nxt['session_id']}"),
                       on_click=mark_done, args=(nxt["session_id"], int(nxt["position"])), disabled=readonly,
                       width="stretch")
+            with st.container(horizontal=True, horizontal_alignment="center"):
+                with st.popover("Je ne l'ai pas faite", type="tertiary", icon=":material/block:",
+                                key=k(f"nxskip_{nxt['session_id']}")):
+                    skip_form(nxt, k(f"nxsf_{nxt['session_id']}"))
     else:
         with st.container(key=f"{prefix}-card-next"):
             render("<div class='allset'>Toutes tes séances sont faites. Bravo !</div>")
@@ -301,12 +358,24 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         label = f"{note.emoji} Ressenti" if note.emoji else ("💬 Ressenti" if note.commentaire else "Ressenti")
         with st.popover(label, type="tertiary", key=k(f"pop_{sid}"), wrap=False,
                         icon=None if (note.emoji or note.commentaire) else ":material/add_comment:"):
-            note_form(sid, k(f"nf_{sid}"))
+            note_form(r, k(f"nf_{sid}"))
+
+    def skip_button(r) -> None:
+        sid = r["session_id"]
+        skipped = sid in sv.skipped
+        with st.popover("Pas faite", type="tertiary", key=k(f"skp_{sid}"), wrap=False,
+                        icon=":material/cancel:" if skipped else ":material/block:"):
+            skip_form(r, k(f"sf_{sid}"))
 
     def race_button(r) -> None:
         sid = r["session_id"]
         with st.popover("Mon chrono", icon=":material/flag:", key=k(f"pop_{sid}"), wrap=False):
             race_form(r, k(f"race_{sid}"))
+
+    def checklist_button(r) -> None:
+        with st.popover("Ma checklist du jour J", icon=":material/checklist:", type="tertiary",
+                        key=k(f"ckpop_{r['session_id']}")):
+            extras.checklist(s, sv, readonly, prefix + "p", columns=1)
 
     # ------------------------------------------------------------------ onglets
     t_planning, t_paces, t_log, t_races, t_prog, t_routes = st.tabs(
@@ -324,11 +393,15 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
                                  help="Change le nombre de séances de toutes tes semaines. Tes allures ne changent "
                                       "pas. Pour une seule semaine, utilise « Modifier ma semaine » en bas.")
             st.space("stretch")
+            extras.agenda_button(s, table, sp.paces, prefix)
+            extras.report_button(s, readonly, prefix)
             with st.popover("Imprimer ou exporter", icon=":material/print:", key=k("exports")):
                 ui.exports_bar(s, table, sp, stt.frequency, key=prefix, done=done_ids, race_time=pr.race_time,
                                notes=sv.notes, vertical=True)
         planning.render_planning(s, stt, readonly, prefix,
-                                 planning.Controls(check=check_box, feel=feel_button, race=race_button))
+                                 planning.Controls(check=check_box, feel=feel_button, race=race_button,
+                                                   skip=skip_button, checklist=checklist_button), coach)
+        extras.recap_toggle(s, sv, readonly, prefix)
 
     with t_paces:
         render(paces_track(sp.paces, ui.basis_text(sp, s)))
@@ -336,16 +409,20 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
                    "Les pastilles de couleur des séances renvoient à ces allures.")
 
     with t_log, st.container(key=f"{prefix}-card-log"):
-        render(journal_html(suivi.journal(table, sv), pr.race_time))
+        render(journal_html(suivi.journal(table, sv), pr.race_time, coach.replies))
 
-    records = historique.race_history(store, profils.programs_of(store, s))
-    with t_races, st.container(key=f"{prefix}-card-log-races"):
-        render(history_html(records))
+    history = historique.race_history(store, profils.programs_of(store, s))
+    with t_races:
+        medals = extras.records_html(records.personal_records(history))
+        if medals:
+            render(medals)
+        with st.container(key=f"{prefix}-card-log-races"):
+            render(history_html(history))
 
     with t_prog:
         progression.render_program(stt, f"{prefix}_prog")
         st.markdown("##### Tes courses")
-        progression.render_races(records, f"{prefix}_races")
+        progression.render_races(history, f"{prefix}_races")
 
     with t_routes:
         render_student_routes(prefix)
