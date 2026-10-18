@@ -31,6 +31,13 @@ class Distance:
     min_seconds: int         # bornes de saisie de l'objectif
     max_seconds: int
     default_method: str      # « temps » ou « vma » à la création d'un élève
+    sport: str = "route"     # « route » (allures calculées), « trail » ou « triathlon »
+    short: str = ""          # libellé court (sous-onglet), ex. « 50 km », « L »
+
+    @property
+    def uses_paces(self) -> bool:
+        """Course sur route : allures calculées (objectif ou VMA), 2/3/4 séances par semaine."""
+        return self.sport == "route"
 
 
 DISTANCES: dict[str, Distance] = {
@@ -38,8 +45,27 @@ DISTANCES: dict[str, Distance] = {
     "marathon": Distance("marathon", "Marathon", 42.2, "A1", "03:30:00", 1 * 3600 + 50 * 60, 8 * 3600, "temps"),
     "semi": Distance("semi", "Semi-marathon", 21.1, "A2", "01:45:00", 50 * 60, 4 * 3600, "temps"),
     "10k": Distance("10k", "10 km", 10.0, "A3", "00:50:00", 25 * 60, 2 * 3600, "vma"),
+    # Trail et triathlon : plans décrits en texte (pas d'allures calculées) ; objectif et VMA facultatifs
+    # (la VMA sert seulement à afficher l'allure des séances « à x % de VMA »).
+    "trail50": Distance("trail50", "Trail 50 km", 50.0, "A1", "", 3 * 3600, 30 * 3600, "vma", "trail", "50 km"),
+    "triL": Distance("triL", "Triathlon L (Half Iron Man)", 113.0, "A1", "", 3 * 3600, 12 * 3600, "vma",
+                     "triathlon", "L"),
 }
 DISTANCE_KEYS: list[str] = list(DISTANCES)
+ROUTE_KEYS: list[str] = [k for k, d in DISTANCES.items() if d.sport == "route"]
+# Onglets « Trail » et « Triathlon » du coach : un sous-onglet par format (d'autres formats pourront s'ajouter).
+SPORTS: dict[str, str] = {"trail": "Trail", "triathlon": "Triathlon"}
+SPORT_KEYS: dict[str, list[str]] = {sp: [k for k, d in DISTANCES.items() if d.sport == sp] for sp in SPORTS}
+
+# ----------------------------------------------------------------------------
+# Trail et triathlon : types de séance
+# ----------------------------------------------------------------------------
+# Trail : étiquette libre (celles du plan de référence sont proposées).
+TRAIL_TAGS: list[str] = ["Footing", "VMA", "Côtes", "SL", "Fartlek", "M/D", "VTT", "Trail", "Renfo"]
+# Triathlon : discipline du jour (« course_inter » = course de préparation avec un temps à saisir).
+TRI_DISCIPLINES: dict[str, str] = {"natation": "Sortie natation", "velo": "Sortie vélo", "cap": "Course à pied",
+                                   "enchainement": "Enchaînement", "course_inter": "Course intermédiaire"}
+STATUS_LABELS: dict[str, str] = {"obligatoire": "Obligatoire", "optionnel": "Optionnel"}
 
 
 # ----------------------------------------------------------------------------
@@ -139,10 +165,13 @@ SESSION_COLUMNS: list[str] = [
     "intensite",   # intensité en texte libre, saisie par le coach (affichée telle quelle dans « Mon Planning »)
     "frequence",   # « 3-4 » (toujours) ou « 4 » (seulement à 4 séances/semaine)
     "remarque",    # note libre
+    "tag",         # trail : VMA, Côtes, SL… ; triathlon : discipline (natation, velo, cap, enchainement, course_inter)
+    "statut",      # « obligatoire » ou « optionnel » (trail) ; vide pour la route
+    "note",        # note technique rattachée à la séance (ex. le parcours « triangle »)
 ]
 SESSION_INPUT_COLUMNS: list[str] = [c for c in SESSION_COLUMNS if c not in ("week_id", "ordre")]
 SESSION_TEXT_COLUMNS: list[str] = ["session_id", "seance", "km_env", "duree_env", "contenu", "temps_spe", "remarque",
-                                   "intensite"]
+                                   "intensite", "tag", "note"]
 WEEK_COLUMNS: list[str] = ["week_id", "position", "phase"]
 
 DISPLAY_NAMES: dict[str, str] = {
@@ -152,7 +181,7 @@ DISPLAY_NAMES: dict[str, str] = {
     "contenu": "Contenu", "km_spe": "Km spé.", "allure": "Allure",
     "frequence": "Fréquence", "allure_txt": "Allure /km", "allure_dec": "Allure (min,cent./km)",
     "vitesse": "km/h", "temps_aff": "Temps spé.", "temps_spe_min": "Temps spé. calculé (min)",
-    "remarque": "Remarque", "intensite": "Intensité",
+    "remarque": "Remarque", "intensite": "Intensité", "tag": "Type", "statut": "Statut", "note": "Note technique",
 }
 
 # Semaine ajoutée à la main : squelette de 3 séances, comme la semaine S0 de l'Excel.
@@ -161,3 +190,12 @@ SKELETON_WEEK: list[dict] = [
     {"seance": "s2", "allure": "A1"},
     {"seance": "s3", "allure": "A2"},
 ]
+# Squelettes trail et triathlon (à compléter par le coach).
+SKELETONS: dict[str, list[dict]] = {
+    "route": SKELETON_WEEK,
+    "trail": [{"seance": "s1", "jour": "mar", "tag": "VMA", "statut": "obligatoire"},
+              {"seance": "s2", "jour": "jeu", "tag": "Côtes", "statut": "obligatoire"},
+              {"seance": "s3", "jour": "dim", "tag": "SL", "statut": "obligatoire"}],
+    "triathlon": [{"seance": "s1", "jour": "lun", "tag": "natation"}, {"seance": "s2", "jour": "mer", "tag": "cap"},
+                  {"seance": "s3", "jour": "sam", "tag": "velo"}],
+}

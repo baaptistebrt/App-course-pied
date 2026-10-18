@@ -286,7 +286,7 @@ def compute_paces_vma(vma_kmh: float, distance: str = "10k", pct: dict | None = 
         # Référence = bas de la plage, comme les formules de l'Excel (M7 = L10 × 80 %).
         out[d.code] = Pace(code=d.code, label=d.label, description=d.description, kmh=v_lo,
                            min_per_km=60 / v_lo, ref_km=d.ref_km, ref_label=d.ref_label,
-                           is_anchor=(d.code == dist.anchor), kmh_min=v_lo, kmh_max=v_hi)
+                           is_anchor=(d.code == dist.anchor and dist.uses_paces), kmh_min=v_lo, kmh_max=v_hi)
     return out
 
 

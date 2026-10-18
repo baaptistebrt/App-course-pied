@@ -16,9 +16,10 @@ from datetime import date, timedelta
 
 import pandas as pd
 
-from .calculs import Pace, format_hms, format_minutes, parse_duration_minutes, parse_km_range
+from .calculs import Pace, format_hms, format_minutes, format_pace, parse_duration_minutes, parse_km_range
 from .config import (DAYS, FREQ_ALWAYS, FREQ_ONLY_4, PACE_CODES, PACE_LABELS, RACE_DAY_LABEL,
-                     SESSION_COLUMNS, SESSION_INPUT_COLUMNS, SESSION_TEXT_COLUMNS, SKELETON_WEEK, WEEK_COLUMNS)
+                     SESSION_COLUMNS, SESSION_INPUT_COLUMNS, SESSION_TEXT_COLUMNS, SKELETON_WEEK, TRI_DISCIPLINES,
+                     WEEK_COLUMNS)
 
 
 # ----------------------------------------------------------------------------
@@ -107,6 +108,26 @@ def clean_frequency(value) -> str:
     return FREQ_ONLY_4 if raw in ("4", "4.0", "si 4 séances", "4 seulement") else FREQ_ALWAYS
 
 
+def clean_status(value) -> str:
+    """« obligatoire », « optionnel » ou "" (séance de route, sans statut)."""
+    raw = clean_text(value).lower()
+    if raw.startswith("opt"):
+        return "optionnel"
+    if raw.startswith("obl") or raw in ("x", "oui"):
+        return "obligatoire"
+    return ""
+
+
+def clean_tag(value) -> str:
+    """Étiquette de séance ; pour le triathlon, les libellés de discipline sont ramenés à leur clé."""
+    raw = clean_text(value)
+    low = raw.lower()
+    for key, label in TRI_DISCIPLINES.items():
+        if low in (key, label.lower(), label.lower().replace("sortie ", "")):
+            return key
+    return raw
+
+
 def clean_sessions(df: pd.DataFrame) -> pd.DataFrame:
     """Normalise un tableau de séances. Idempotente. Numérote « sN » les séances sans libellé."""
     src = df.reset_index(drop=True)
@@ -123,6 +144,9 @@ def clean_sessions(df: pd.DataFrame) -> pd.DataFrame:
             out[col] = pd.Series([clean_frequency(v) for v in values], dtype=object)
         elif col == "jour":
             out[col] = pd.Series([clean_day(v) for v in values], dtype=object)
+        elif col == "statut":
+            out[col] = pd.Series([clean_status(v) for v in values], dtype=object)
+    out["tag"] = pd.Series([clean_tag(v) for v in out["tag"]], dtype=object)
     # Identifiant stable : conservé s'il existe, créé pour une nouvelle séance.
     out["session_id"] = [sid or _new_id() for sid in out["session_id"]]
     numbers = [int(m.group(1)) for v in out["seance"] if (m := re.fullmatch(r"[sS](\d+)", v))]
@@ -148,11 +172,78 @@ def is_race_day(seance) -> bool:
 
 
 def is_empty_session(row) -> bool:
-    """Séance sans aucun contenu (ni km, ni durée, ni contenu, ni allure)."""
+    """Séance sans aucun contenu (ni km, ni durée, ni contenu, ni allure, ni type)."""
     return not any([clean_text(row.get("km_env")), clean_text(row.get("duree_env")),
                     clean_text(row.get("contenu")), pace_codes(row.get("allure")),
-                    not is_missing(row.get("km_spe")), clean_text(row.get("temps_spe"))])
+                    not is_missing(row.get("km_spe")), clean_text(row.get("temps_spe")), clean_text(row.get("tag"))])
 
+
+def is_optional(row) -> bool:
+    """Séance marquée « optionnelle » par le coach (trail) : elle ne compte que si elle est faite."""
+    return clean_text(row.get("statut")) == "optionnel"
+
+
+def is_intermediate_race(row) -> bool:
+    """Course de préparation (triathlon) : l'élève y saisit un temps, comme le jour J."""
+    return clean_text(row.get("tag")) == "course_inter"
+
+
+def session_label(r) -> str:
+    """Titre court d'une séance, pour toutes les vues (route, trail, triathlon).
+
+    Route : le contenu. Trail : « VMA · Footing de 25'… » (l'étiquette n'est pas répétée si le
+    contenu commence déjà par elle). Triathlon : la discipline (« Sortie natation »…)."""
+    contenu = clean_text(r.get("contenu"))
+    tag = clean_text(r.get("tag"))
+    if is_race_day(r.get("seance")):
+        return contenu or "Jour J"
+    if tag in TRI_DISCIPLINES:
+        if tag == "course_inter" and contenu:
+            first = re.split(r"[,.;\n]", contenu.lstrip("•- "), maxsplit=1)[0].strip()
+            return first or TRI_DISCIPLINES[tag]
+        return TRI_DISCIPLINES[tag]
+    if tag and contenu and not contenu.lower().startswith(tag.lower()):
+        return f"{tag} · {contenu}"
+    return contenu or tag or ("Séance à l'allure indiquée" if pace_codes(r.get("allure")) else "Séance libre")
+
+
+SHORT_TITLE = 45     # au-delà, le contenu d'une séance de trail passe sous le titre (l'étiquette devient le titre)
+
+
+def session_heading(r) -> tuple[str, str]:
+    """(titre, description) d'une carte de séance.
+
+    Route : (titre court, ""), comme avant. Triathlon : (discipline ou nom de la course intermédiaire,
+    description détaillée). Trail : un contenu court reste le titre ; un contenu long passe en description
+    sous l'étiquette (« VMA », « Côtes »…)."""
+    contenu = clean_text(r.get("contenu"))
+    tag = clean_text(r.get("tag"))
+    if is_race_day(r.get("seance")) or not tag:
+        return session_label(r), ""
+    if tag in TRI_DISCIPLINES:
+        return session_label(r), contenu
+    if contenu and (len(contenu) > SHORT_TITLE or "\n" in contenu):
+        return tag, contenu
+    return session_label(r), ""
+
+
+
+_VMA_PCT = re.compile(r"(\d{2,3})\s*%\s*(?:de\s+(?:la\s+|ta\s+)?)?VMA", re.IGNORECASE)
+
+
+def vma_hints(text: str, vma: float | None) -> list[str]:
+    """« 105 % VMA = 3'10" /km » pour chaque pourcentage de VMA cité dans le texte d'une séance (trail,
+    triathlon), quand la VMA de l'élève est connue."""
+    if not vma or vma <= 0:
+        return []
+    out: list[str] = []
+    for m in _VMA_PCT.finditer(text or ""):
+        pct = int(m.group(1))
+        if 50 <= pct <= 130:
+            hint = f"{pct} % VMA = {format_pace(60 / (vma * pct / 100))} /km"
+            if hint not in out:
+                out.append(hint)
+    return out
 
 # ----------------------------------------------------------------------------
 # Plan
@@ -161,13 +252,17 @@ def is_empty_session(row) -> bool:
 class Plan:
     weeks: pd.DataFrame
     sessions: pd.DataFrame
+    intro: str = ""              # note d'introduction du plan (texte libre du coach), affichée en tête
 
     @classmethod
     def empty(cls) -> "Plan":
         return cls(pd.DataFrame(columns=WEEK_COLUMNS), pd.DataFrame(columns=SESSION_COLUMNS))
 
+    def with_intro(self, intro: str) -> "Plan":
+        return Plan(self.weeks.copy(), self.sessions.copy(), str(intro or "").strip()).normalized()
+
     @classmethod
-    def from_week_list(cls, weeks: list[dict]) -> "Plan":
+    def from_week_list(cls, weeks: list[dict], intro: str = "") -> "Plan":
         """[{phase, sessions: [...]}, …] (ordre chronologique) -> Plan."""
         week_rows, frames = [], []
         for pos, w in enumerate(weeks):
@@ -178,7 +273,7 @@ class Plan:
             sess.insert(1, "ordre", range(len(sess)))
             frames.append(sess)
         sessions = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=SESSION_COLUMNS)
-        return cls(pd.DataFrame(week_rows, columns=WEEK_COLUMNS), sessions).normalized()
+        return cls(pd.DataFrame(week_rows, columns=WEEK_COLUMNS), sessions, intro).normalized()
 
     def copy_with_new_ids(self) -> "Plan":
         """Copie indépendante (nouveaux identifiants de semaines), ex. modèle -> plan d'élève."""
@@ -188,7 +283,7 @@ class Plan:
         sessions = self.sessions.copy()
         sessions["week_id"] = sessions["week_id"].map(mapping)
         sessions["session_id"] = [_new_id() for _ in range(len(sessions))]
-        return Plan(weeks, sessions).normalized()
+        return Plan(weeks, sessions, self.intro).normalized()
 
     def normalized(self) -> "Plan":
         weeks = self.weeks.copy() if len(self.weeks.columns) else pd.DataFrame(columns=WEEK_COLUMNS)
@@ -219,7 +314,7 @@ class Plan:
             sessions.insert(0, "week_id", pd.Series(dtype=object))
             sessions.insert(1, "ordre", pd.Series(dtype=int))
         sessions["km_spe"] = sessions["km_spe"].astype("float64")
-        return Plan(weeks, sessions[SESSION_COLUMNS].reset_index(drop=True))
+        return Plan(weeks, sessions[SESSION_COLUMNS].reset_index(drop=True), clean_text(self.intro))
 
     # ---- lecture -------------------------------------------------------------
     @property
@@ -253,12 +348,12 @@ class Plan:
         others = self.sessions[self.sessions["week_id"] != week_id]
         frames = [f for f in (others, sub) if len(f)]
         sessions = pd.concat(frames, ignore_index=True) if frames else sub
-        return Plan(self.weeks.copy(), sessions).normalized()
+        return Plan(self.weeks.copy(), sessions, self.intro).normalized()
 
     def set_phase(self, week_id: str, phase: str) -> "Plan":
         weeks = self.weeks.copy()
         weeks.loc[weeks["week_id"] == week_id, "phase"] = clean_text(phase)
-        return Plan(weeks, self.sessions.copy()).normalized()
+        return Plan(weeks, self.sessions.copy(), self.intro).normalized()
 
     def insert_week(self, position: int, sessions=None, phase: str = "") -> "Plan":
         """Insère une semaine (squelette de 3 séances par défaut) à `position`."""
@@ -274,7 +369,7 @@ class Plan:
         sub.insert(0, "week_id", wid)
         sub.insert(1, "ordre", range(len(sub)))
         frames = [f for f in (self.sessions, sub) if len(f)]
-        return Plan(weeks, pd.concat(frames, ignore_index=True) if frames else sub).normalized()
+        return Plan(weeks, pd.concat(frames, ignore_index=True) if frames else sub, self.intro).normalized()
 
     def duplicate_week(self, week_id: str) -> "Plan":
         """Copie de la semaine insérée juste avant elle."""
@@ -286,15 +381,15 @@ class Plan:
         if self.n_weeks <= 1:
             raise ValueError("Le plan doit contenir au moins une semaine.")
         return Plan(self.weeks[self.weeks["week_id"] != week_id].copy(),
-                    self.sessions[self.sessions["week_id"] != week_id].copy()).normalized()
+                    self.sessions[self.sessions["week_id"] != week_id].copy(), self.intro).normalized()
 
-    def resize(self, n_weeks: int) -> "Plan":
+    def resize(self, n_weeks: int, skeleton: list[dict] | None = None) -> "Plan":
         """Ajuste la durée en gardant la fin du plan (affûtage + course) : ajoute/retire au début."""
         if n_weeks < 1:
             raise ValueError("Le plan doit contenir au moins une semaine.")
         plan = self
         while plan.n_weeks < n_weeks:
-            plan = plan.insert_week(0)
+            plan = plan.insert_week(0, skeleton)
         while plan.n_weeks > n_weeks:
             plan = plan.delete_week(plan.weeks.sort_values("position")["week_id"].iloc[0])
         return plan
@@ -322,8 +417,8 @@ def computed_columns(sessions: pd.DataFrame, paces: dict[str, Pace], objective_s
     saisi = out["temps_spe"] if "temps_spe" in out.columns else [""] * len(out)
     out["temps_aff"] = [clean_text(t) or (format_minutes(m) if not is_missing(m) else "")
                         for t, m in zip(saisi, temps)]
-    out["duree_env"] = [format_hms(objective_seconds) if is_race_day(s) and not clean_text(d) else d
-                        for s, d in zip(out["seance"], out["duree_env"])]
+    out["duree_env"] = [format_hms(objective_seconds) if is_race_day(s) and not clean_text(d) and objective_seconds
+                        else d for s, d in zip(out["seance"], out["duree_env"])]
     return out
 
 
@@ -356,13 +451,15 @@ def select_sessions(sub: pd.DataFrame, n: int) -> pd.DataFrame:
 
 def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
                     race_date: date | None = None, frequency: int | None = None,
-                    hide_empty: bool = False, week_counts: dict | None = None) -> pd.DataFrame:
+                    hide_empty: bool = False, week_counts: dict | None = None,
+                    excluded: set | frozenset | None = None) -> pd.DataFrame:
     """Plan complet (ordre chronologique) avec colonnes calculées.
 
     frequency=3 retire les séances marquées « 4 » ; frequency=2 garde ensuite 2 séances par semaine
     (jour de course, première et dernière séance en priorité) ; hide_empty retire les séances vides.
     week_counts {week_id: n} : nombre de séances choisi par l'élève pour une semaine précise ; il
     remplace la fréquence pour cette semaine seulement (voir select_sessions).
+    excluded : séances écartées par l'élève (triathlon) ; le jour de course n'est jamais écarté.
     """
     frames = []
     for _, w in plan.weeks.sort_values("position").iterrows():
@@ -370,6 +467,8 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
         sub = plan.sessions_of(w["week_id"])
         if hide_empty:
             sub = sub[[not is_empty_session(r) for _, r in sub.iterrows()]]
+        if excluded:
+            sub = sub[[r["session_id"] not in excluded or is_race_day(r["seance"]) for _, r in sub.iterrows()]]
         n = (week_counts or {}).get(w["week_id"])
         if n:
             sub = select_sessions(sub.reset_index(drop=True), int(n))
@@ -392,13 +491,33 @@ def full_plan_table(plan: Plan, paces: dict[str, Pace], objective_seconds: int,
 
 
 ACTIVITY_LABELS = {"course": "Course", "fractionne": "Fractionné", "seuil": "Seuil", "progressif": "Progressif",
-                   "allure": "Allure spécifique", "longue": "Sortie longue", "footing": "Footing"}
+                   "allure": "Allure spécifique", "longue": "Sortie longue", "footing": "Footing",
+                   # trail
+                   "cotes": "Côtes", "fartlek": "Fartlek", "md": "Montée / descente", "vtt": "VTT",
+                   "trail": "Trail", "renfo": "Renforcement",
+                   # triathlon (clés de TRI_DISCIPLINES)
+                   "natation": "Natation", "velo": "Vélo", "cap": "Course à pied", "enchainement": "Enchaînement",
+                   "course_inter": "Course intermédiaire"}
+# Étiquette de séance de trail (en minuscules) -> type d'activité (icône et couleur de la carte).
+TRAIL_KINDS = {"vma": "fractionne", "côtes": "cotes", "cotes": "cotes", "côte": "cotes", "cote": "cotes",
+               "sl": "longue", "sortie longue": "longue", "fartlek": "fartlek", "m/d": "md", "md": "md",
+               "vtt": "vtt", "vélo": "vtt", "footing": "footing", "trail": "trail", "renfo": "renfo",
+               "renforcement": "renfo", "seuil": "seuil"}
+# Emoji de chaque type (titre des événements d'agenda, e-mails).
+ACTIVITY_EMOJI = {"course": "🏁", "natation": "🏊", "velo": "🚴", "vtt": "🚵", "cap": "🏃", "enchainement": "🔁",
+                  "course_inter": "🏅", "cotes": "⛰️", "md": "⛰️", "trail": "⛰️", "renfo": "💪"}
 
 
 def activity_kind(row) -> str:
-    """Type d'activité d'une séance, déduit de son libellé, de ses allures et de son contenu."""
+    """Type d'activité d'une séance : discipline (triathlon), étiquette (trail), sinon déduit du libellé,
+    des allures et du contenu (route)."""
     if is_race_day(row["seance"]):
         return "course"
+    tag = clean_text(row.get("tag"))
+    if tag in TRI_DISCIPLINES:
+        return tag
+    if tag.lower() in TRAIL_KINDS:
+        return TRAIL_KINDS[tag.lower()]
     codes = pace_codes(row.get("allure"))
     text = clean_text(row.get("contenu")).lower()
     km = parse_km_range(row.get("km_env"))

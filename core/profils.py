@@ -55,6 +55,7 @@ class Student:
     vma_pct: dict = field(default_factory=dict)   # {allure: (% min, % max)}
     email_envoye_le: str = ""
     course: str = ""                    # nom de la course, ex. « Marathon de Paris 2027 » (facultatif)
+    nutrition: str = ""                 # conseils nutrition jour J propres à l'élève (sinon ceux de la distance)
 
     @property
     def frequence(self) -> int:
@@ -117,7 +118,7 @@ def student_to_bytes(s: Student) -> bytes:
         ("methode", s.methode), ("objectif", s.objectif), ("vma", s.vma if s.vma is not None else ""),
         ("date_course", s.date_course.isoformat() if s.date_course else ""),
         ("frequence_defaut", s.frequence_defaut), ("frequence_eleve", s.frequence_eleve or ""),
-        ("cree_le", s.cree_le), ("email_envoye_le", s.email_envoye_le),
+        ("cree_le", s.cree_le), ("email_envoye_le", s.email_envoye_le), ("nutrition", s.nutrition),
     ], columns=["cle", "valeur"])
     formules = pd.DataFrame([{"allure": c, "pourcentage": v} for c, v in clean_ratios(s.ratios).items()])
     vma = pd.DataFrame([{"allure": c, "pct_min": lo, "pct_max": hi} for c, (lo, hi) in clean_vma_pct(s.vma_pct).items()])
@@ -183,6 +184,7 @@ def student_from_bytes(content: bytes) -> Student:
         ratios=clean_ratios(ratios), plan=plan_from_sheets(sheets), cree_le=str(p.get("cree_le", "")),
         methode=methode, vma=vma, vma_pct=clean_vma_pct(vma_pct),
         email_envoye_le=str(p.get("email_envoye_le", "")), course=str(p.get("course", "")).strip(),
+        nutrition=str(p.get("nutrition", "")).strip(),
     )
 
 
@@ -282,11 +284,13 @@ def create_student(store: Store, email: str, prenom: str, distance: str, objecti
         raise ValueError("Distance inconnue.")
     objectif = normalize_objective(objectif, distance) if objectif and str(objectif).strip() else ""
     vma = parse_vma(vma) if vma not in (None, "") and str(vma).strip() else None
-    if not objectif and vma is None:
+    if not DISTANCES[distance].uses_paces:                 # trail / triathlon : objectif et VMA facultatifs
+        methode = "vma" if vma is not None else "temps"
+    elif not objectif and vma is None:
         raise ValueError("Renseigne un objectif de temps ou une VMA (ou les deux).")
     if methode not in METHODS:
         methode = DISTANCES[distance].default_method if (objectif and vma is not None) else ("temps" if objectif else "vma")
-    if methode == "temps" and not objectif:
+    if methode == "temps" and not objectif and DISTANCES[distance].uses_paces:
         raise ValueError("La méthode « objectif de temps » demande un objectif.")
     if methode == "vma" and vma is None:
         raise ValueError("La méthode « VMA » demande une VMA.")

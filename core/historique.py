@@ -48,8 +48,12 @@ def program_state(store: Store, s) -> ProgramState:
     sp = student_paces(s)
     sv = sv_mod.load_suivi(store, s.id)
     freq = sv_mod.effective_frequency(s, sv)
-    table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, freq, hide_empty=True,
-                            week_counts=sv.semaines)
+    if DISTANCES[s.distance].uses_paces:
+        table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, freq, hide_empty=True,
+                                week_counts=sv.semaines)
+    else:       # trail / triathlon : pas de 2/3/4 séances ; séances écartées par l'élève (triathlon) masquées
+        table = full_plan_table(s.plan, sp.paces, sp.race_seconds, s.date_course, None, hide_empty=True,
+                                excluded=sv.excluded)
     objective = sp.race_seconds if s.objectif else None
     return ProgramState(s, sp, freq, table, sv, sv_mod.progress(table, sv, objective))
 
@@ -103,10 +107,12 @@ def race_record(state: ProgramState) -> RaceRecord:
     gap_secs = secs - state.sp.race_seconds if (secs is not None and s.objectif) else None
     return RaceRecord(
         student_id=s.id, person=s.person, name=s.display_name, email=s.email, course=s.race_name,
-        distance=s.distance, race_date=s.date_course, objective=format_race_time(state.sp.race_seconds),
-        objective_is_estimate=not s.objectif, race_time=pr.race_time, race_seconds=secs, gap=pr.race_gap,
+        distance=s.distance, race_date=s.date_course,
+        objective=format_race_time(state.sp.race_seconds) if state.sp.race_seconds else "",
+        objective_is_estimate=not s.objectif and bool(state.sp.race_seconds), race_time=pr.race_time, race_seconds=secs, gap=pr.race_gap,
         gap_seconds=gap_secs, done=pr.done, total=pr.total, km_done=pr.km_done, feeling=note.label,
-        comment=note.commentaire, method=METHODS[state.sp.method], vma=s.vma)
+        comment=note.commentaire, vma=s.vma,
+        method=METHODS[state.sp.method] if DISTANCES[s.distance].uses_paces else "—")
 
 
 def race_history(store: Store, students: list, today: date | None = None) -> list[RaceRecord]:

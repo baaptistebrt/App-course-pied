@@ -8,7 +8,9 @@ aucun risque qu'une modification du plan par le coach efface une case cochée ou
 
 Onglet « seances » : une ligne par séance cochée, commentée ou marquée « pas faite »
     session_id, fait (1/0), fait_le (AAAA-MM-JJ), ressenti (1 à 5), commentaire, note_le,
-    pas_faite_le (AAAA-MM-JJ, séance marquée « pas faite »), raison, km_reels (km réellement courus)
+    pas_faite_le (AAAA-MM-JJ, séance marquée « pas faite »), raison, km_reels (km réellement courus),
+    temps (chrono d'une course intermédiaire, triathlon)
+Onglet « ecartees » : séances que l'élève ne compte pas faire (triathlon, « Choisir mes séances »)
 Onglet « infos » : temps_realise, frequence, maj_le, reponses_vues_le, checklist, recap
 Onglet « semaines » : week_id, seances (nombre de séances choisi par l'élève pour cette semaine)
 Onglet « signalements » : douleurs et absences signalées par l'élève
@@ -28,7 +30,7 @@ import pandas as pd
 
 from .calculs import format_race_time, parse_km_range
 from .config import COMMENT_MAX, FEELINGS, FREQUENCIES, WEEK_COUNTS
-from .plan import is_race_day
+from .plan import is_intermediate_race, is_optional, is_race_day
 from .stockage import Store, read_workbook, write_workbook
 
 SUIVI_DIR = "suivi"
@@ -130,6 +132,8 @@ class Suivi:
     checklist: frozenset = frozenset()           # éléments cochés de la checklist du jour J
     recap: bool = True                           # reçoit le récap du dimanche par e-mail
     km: dict = field(default_factory=dict)       # identifiant de séance -> km réellement courus (si différent)
+    times: dict = field(default_factory=dict)    # identifiant de séance -> chrono « h:mm:ss » (course intermédiaire)
+    excluded: frozenset = frozenset()            # séances écartées par l'élève (triathlon)
 
     def with_(self, **changes) -> "Suivi":
         return replace(self, maj_le=_now(), **changes)
@@ -163,8 +167,8 @@ def parse_race_time(text: str) -> int:
         h, m, s = (0, nums[0], nums[1]) if nums[0] >= 20 else (nums[0], nums[1], 0)
     else:
         h, m, s = 0, nums[0], 0
-    if m >= 60 or s >= 60 or not 300 <= h * 3600 + m * 60 + s <= 12 * 3600:
-        raise ValueError("Temps invalide (minutes et secondes < 60, entre 5 min et 12 h).")
+    if m >= 60 or s >= 60 or not 300 <= h * 3600 + m * 60 + s <= 48 * 3600:
+        raise ValueError("Temps invalide (minutes et secondes < 60, entre 5 min et 48 h).")
     return h * 3600 + m * 60 + s
 
 
@@ -229,11 +233,14 @@ def load_suivi(store: Store, student_id: str) -> Suivi:
         return Suivi()
     rows = sheets.get("seances", pd.DataFrame())
     has_flag = "fait" in rows.columns
-    done, notes, skipped, kms = {}, {}, {}, {}
+    done, notes, skipped, kms, times = {}, {}, {}, {}, {}
     for _, r in rows.iterrows():
         sid = r.get("session_id")
         if not isinstance(sid, str) or not sid:
             continue
+        chrono = _text(r.get("temps"))
+        if chrono:
+            times[sid] = chrono
         try:
             km = parse_km(r.get("km_reels"))
         except ValueError:
@@ -268,11 +275,14 @@ def load_suivi(store: Store, student_id: str) -> Suivi:
         if report is not None:
             reports.append(report)
     checked = frozenset(x for x in _text(infos.get("checklist")).split("|") if x)
+    excluded = frozenset(_text(x) for x in sheets.get("ecartees", pd.DataFrame({"session_id": []})).get(
+        "session_id", []) if _text(x))
     suivi = Suivi(done=done, temps_realise=_text(infos.get("temps_realise")),
                   frequence=freq if freq in FREQUENCIES else None, maj_le=_text(infos.get("maj_le")),
                   notes=notes, semaines=weeks, skipped=skipped, reports=tuple(reports),
                   reponses_vues_le=_text(infos.get("reponses_vues_le")), checklist=checked,
-                  recap=_text(infos.get("recap")) not in ("0", "0.0", "non"), km=kms)
+                  recap=_text(infos.get("recap")) not in ("0", "0.0", "non"), km=kms, times=times,
+                  excluded=excluded)
     with _lock:
         _cache[rel] = (version, suivi)
     return suivi
@@ -305,12 +315,12 @@ def _report_from_row(r) -> Report | None:
 
 
 SEANCES_COLUMNS = ["session_id", "fait", "fait_le", "ressenti", "commentaire", "note_le", "pas_faite_le", "raison",
-                   "km_reels"]
+                   "km_reels", "temps"]
 REPORT_COLUMNS = ["id", "type", "debut", "fin", "zone", "niveau", "commentaire", "cree_le", "clos_le"]
 
 
 def save_suivi(store: Store, student_id: str, suivi: Suivi) -> None:
-    ids = sorted(set(suivi.done) | set(suivi.notes) | set(suivi.skipped) | set(suivi.km))
+    ids = sorted(set(suivi.done) | set(suivi.notes) | set(suivi.skipped) | set(suivi.km) | set(suivi.times))
     seances = pd.DataFrame([{
         "session_id": sid, "fait": 1 if sid in suivi.done else 0, "fait_le": suivi.done.get(sid, ""),
         "ressenti": suivi.note(sid).ressenti or "", "commentaire": suivi.note(sid).commentaire,
@@ -318,6 +328,7 @@ def save_suivi(store: Store, student_id: str, suivi: Suivi) -> None:
         "pas_faite_le": suivi.skipped[sid].le if sid in suivi.skipped and sid not in suivi.done else "",
         "raison": suivi.skipped[sid].raison if sid in suivi.skipped and sid not in suivi.done else "",
         "km_reels": suivi.km.get(sid, ""),
+        "temps": suivi.times.get(sid, ""),
     } for sid in ids], columns=SEANCES_COLUMNS)
     infos = pd.DataFrame([("temps_realise", suivi.temps_realise), ("frequence", suivi.frequence or ""),
                           ("maj_le", suivi.maj_le), ("reponses_vues_le", suivi.reponses_vues_le),
@@ -329,8 +340,10 @@ def save_suivi(store: Store, student_id: str, suivi: Suivi) -> None:
         "id": r.id, "type": r.kind, "debut": r.start.isoformat(), "fin": r.end.isoformat() if r.end else "",
         "zone": r.zone, "niveau": r.level or "", "commentaire": r.comment, "cree_le": r.created, "clos_le": r.closed,
     } for r in suivi.reports], columns=REPORT_COLUMNS)
-    store.write(_file(student_id), write_workbook({"seances": seances, "infos": infos, "semaines": semaines,
-                                                   "signalements": reports}))
+    sheets = {"seances": seances, "infos": infos, "semaines": semaines, "signalements": reports}
+    if suivi.excluded:                               # onglet ajouté seulement s'il sert (triathlon)
+        sheets["ecartees"] = pd.DataFrame({"session_id": sorted(suivi.excluded)})
+    store.write(_file(student_id), write_workbook(sheets))
 
 
 # ----------------------------------------------------------------------------
@@ -495,6 +508,33 @@ def set_week_count(store: Store, student_id: str, week_id: str, count: int | Non
     return updated
 
 
+def set_session_time(store: Store, student_id: str, session_id: str, text: str) -> Suivi:
+    """Chrono d'une course intermédiaire (texte vide = effacé). Lève ValueError si le format est invalide.
+    Saisir un chrono valide aussi la séance."""
+    value = format_race_time_hms(parse_race_time(text)) if str(text or "").strip() else ""
+    suivi = load_suivi(store, student_id)
+    times, marks, skipped = dict(suivi.times), dict(suivi.done), dict(suivi.skipped)
+    if value:
+        times[session_id] = value
+        marks.setdefault(session_id, date.today().isoformat())
+        skipped.pop(session_id, None)
+    else:
+        times.pop(session_id, None)
+    updated = suivi.with_(times=times, done=marks, skipped=skipped)
+    save_suivi(store, student_id, updated)
+    return updated
+
+
+def set_week_selection(store: Store, student_id: str, week_session_ids: list[str], kept: list[str]) -> Suivi:
+    """Triathlon : séances que l'élève compte faire dans une semaine. Les autres sont écartées (masquées,
+    sans être comptées comme manquées) ; elles réapparaissent intactes si l'élève les reprend."""
+    suivi = load_suivi(store, student_id)
+    excluded = (set(suivi.excluded) - set(week_session_ids)) | (set(week_session_ids) - set(kept))
+    updated = suivi.with_(excluded=frozenset(excluded))
+    save_suivi(store, student_id, updated)
+    return updated
+
+
 def set_frequency(store: Store, student_id: str, frequency: int) -> Suivi:
     updated = load_suivi(store, student_id).with_(frequence=frequency if frequency in FREQUENCIES else None)
     save_suivi(store, student_id, updated)
@@ -516,10 +556,18 @@ def effective_frequency(student, suivi: Suivi) -> int:
 
 
 def is_done(row, suivi: Suivi) -> bool:
-    """Une séance est réalisée si l'élève l'a cochée ; le JOUR J, si le temps réalisé est saisi."""
+    """Une séance est réalisée si l'élève l'a cochée ; le JOUR J (ou une course intermédiaire), si le temps
+    réalisé est saisi."""
     if is_race_day(row["seance"]):
         return bool(suivi.temps_realise) or row["session_id"] in suivi.done
+    if is_intermediate_race(row) and suivi.times.get(row["session_id"]):
+        return True
     return row["session_id"] in suivi.done
+
+
+def is_counted(row, suivi: Suivi) -> bool:
+    """La séance compte-t-elle dans le total ? Une séance optionnelle (trail) ne compte que si elle est faite."""
+    return not is_optional(row) or is_done(row, suivi)
 
 
 def is_skipped(row, suivi: Suivi) -> bool:
@@ -552,8 +600,10 @@ def _km(value) -> float:
 
 
 def progress(table: pd.DataFrame, suivi: Suivi, objective_seconds: int | None) -> Progress:
-    """Séances réalisées parmi celles affichées à l'élève (selon sa fréquence)."""
+    """Séances réalisées parmi celles affichées à l'élève (selon sa fréquence). Les séances optionnelles
+    (trail) ne comptent dans le total que si elles sont faites."""
     flags = [is_done(r, suivi) for _, r in table.iterrows()] if not table.empty else []
+    counted = sum(1 for _, r in table.iterrows() if is_counted(r, suivi)) if not table.empty else 0
     km = sum(km_run(r, suivi) for (_, r), ok in zip(table.iterrows(), flags) if ok) if flags else 0.0
     shown = set(table["session_id"]) if not table.empty else set()
     dates = [d for sid, d in suivi.done.items() if sid in shown and d]
@@ -568,7 +618,7 @@ def progress(table: pd.DataFrame, suivi: Suivi, objective_seconds: int | None) -
                 gap = f"{'+' if diff > 0 else '−' if diff < 0 else ''}{m}'{s:02d}"
         except ValueError:
             race_time = suivi.temps_realise
-    return Progress(sum(flags), len(table), max(dates) if dates else "", race_time, gap, km)
+    return Progress(sum(flags), counted, max(dates) if dates else "", race_time, gap, km)
 
 
 def ordered(table: pd.DataFrame) -> pd.DataFrame:
@@ -589,7 +639,7 @@ def next_session(table: pd.DataFrame, suivi: Suivi, today: date | None = None):
     rows = ordered(table)
     dated = any(isinstance(d, date) for d in rows["debut"])
     for _, r in rows.iterrows():
-        if is_done(r, suivi) or is_skipped(r, suivi):
+        if is_done(r, suivi) or is_skipped(r, suivi) or is_optional(r):      # optionnelles : en bonus
             continue
         if dated and isinstance(r["fin"], date) and r["fin"] < today:
             continue
@@ -606,7 +656,7 @@ def pending_feedback(table: pd.DataFrame, suivi: Suivi, today: date | None = Non
     for _, r in table.iterrows():
         sid = r["session_id"]
         when = suivi.done.get(sid, "")
-        if not when or is_race_day(r["seance"]) or not suivi.note(sid).empty:
+        if not when or is_race_day(r["seance"]) or is_intermediate_race(r) or not suivi.note(sid).empty:
             continue
         try:
             d = date.fromisoformat(when)
@@ -615,6 +665,14 @@ def pending_feedback(table: pd.DataFrame, suivi: Suivi, today: date | None = Non
         if today - d <= timedelta(days=days) and (best is None or d >= best[0]):
             best = (d, r)
     return best[1] if best else None
+
+
+def _chrono(value: str) -> str:
+    """« 1:12:30 » -> « 1h12'30 » (chrono d'une course intermédiaire)."""
+    try:
+        return format_race_time(parse_race_time(value)) if value else ""
+    except ValueError:
+        return value
 
 
 def journal(table: pd.DataFrame, suivi: Suivi) -> list[dict]:
@@ -632,7 +690,7 @@ def journal(table: pd.DataFrame, suivi: Suivi) -> list[dict]:
         if race and isinstance(r.get("date"), date):
             when = r["date"].isoformat()
         out.append({"row": r, "note": note, "when": when, "race": race, "done": done, "skip": skip,
-                    "km": suivi.km.get(sid)})
+                    "km": suivi.km.get(sid), "time": _chrono(suivi.times.get(sid, ""))})
     out.sort(key=lambda x: (x["when"] or "", x["row"]["position"]), reverse=True)
     return out
 

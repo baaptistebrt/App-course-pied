@@ -25,7 +25,7 @@ from .agenda import session_days
 from .config import PACE_LABELS
 from .emails import EmailConfig, send_message
 from .exports import fr_date
-from .plan import is_race_day, pace_codes
+from .plan import ACTIVITY_EMOJI, activity_kind, is_optional, is_race_day, pace_codes, session_heading, session_label
 from .reglages import Settings, load_settings
 from .stockage import Store
 from .suivi import fr_km, is_done, is_skipped
@@ -70,17 +70,31 @@ def _button(url: str, label: str) -> str:
             f"padding:11px 18px;border-radius:8px;font-weight:bold'>{e(label)}</a></p>")
 
 
+def _short(text: str, limit: int = 160) -> str:
+    text = " ".join(str(text or "").replace("•", "").split())
+    return text if len(text) <= limit else text[:limit - 1].rstrip() + "…"
+
+
 def _session_line(r, paces: dict) -> tuple[str, str]:
-    """(texte, HTML) d'une séance : titre, km, durée, allures."""
+    """(texte, HTML) d'une séance : titre, km, durée, allures (trail / triathlon : début de la description,
+    « optionnelle »)."""
     race = is_race_day(r["seance"])
-    title = "🏁 Jour J" if race else str(r["contenu"] or "Séance")
+    heading, desc = session_heading(r)
+    emoji = ACTIVITY_EMOJI.get(activity_kind(r), "") if str(r.get("tag") or "").strip() else ""
+    if not str(r.get("tag") or "").strip():       # route : comme avant
+        heading, desc = str(r["contenu"] or "Séance"), ""
+    title = "🏁 Jour J" if race else (f"{emoji} {heading}".strip() or "Séance")
+    if is_optional(r):
+        title += " (optionnelle)"
     facts = ", ".join(x for x in (f"{r['km_env']} km" if r["km_env"] else "", r["duree_env"] or "") if x)
     pace = ", ".join(f"{PACE_LABELS[c]} {paces[c].pace_str}" for c in pace_codes(r["allure"]) if c in paces)
     intensity = str(r.get("intensite") or "").strip()
-    text = " — ".join(x for x in (title, facts, pace, f"Intensité : {intensity}" if intensity else "") if x)
+    desc = _short(desc) if not race else ""
+    text = " — ".join(x for x in (title, facts, pace, f"Intensité : {intensity}" if intensity else "", desc) if x)
     sub = " · ".join(x for x in (facts, pace) if x)
     html_ = (f"<b>{e(title)}</b>" + (f"<br><span style='color:{MUTED}'>{e(sub)}</span>" if sub else "")
-             + (f"<br><span style='color:{MUTED}'>Intensité : {e(intensity)}</span>" if intensity else ""))
+             + (f"<br><span style='color:{MUTED}'>Intensité : {e(intensity)}</span>" if intensity else "")
+             + (f"<br><span style='color:{MUTED}'>{e(desc)}</span>" if desc else ""))
     return text, html_
 
 
@@ -180,7 +194,7 @@ def coach_digest(store: Store, states: list, config: EmailConfig, app_url: str, 
         for sid, n in sv.notes.items():
             if sid in rows and n.le and n.le[:10] >= monday.isoformat():
                 quote = f" « {e(n.commentaire)} »" if n.commentaire else ""
-                notes_html.append(f"<li><b>{e(s.display_name)}</b>, {e(str(rows[sid]['contenu'] or 'séance'))} : "
+                notes_html.append(f"<li><b>{e(s.display_name)}</b>, {e(session_label(rows[sid]))} : "
                                   f"{e(n.label)}{quote}</li>")
     subject = f"Bilan de la semaine : {len(running)} élève{'s' if len(running) > 1 else ''}" + \
         (f", {len(alerts_txt)} point{'s' if len(alerts_txt) > 1 else ''} à surveiller" if alerts_txt else "")

@@ -1,4 +1,4 @@
-# Coach running — plans Marathon, Semi-marathon et 10 km
+# Coach running — plans Marathon, Semi-marathon, 10 km, Trail et Triathlon
 
 Application Streamlit pour un coach de course à pied.
 
@@ -24,6 +24,11 @@ Application Streamlit pour un coach de course à pied.
   **réponse du coach** aux ressentis, **signalement** d'une douleur, d'une absence ou d'une maladie,
   tableau **« À surveiller »** pour le coach, ajout des séances à l'**agenda du téléphone**, **records
   personnels**, **checklist du jour J**, **récap du dimanche** par e-mail.
+- **Trail et Triathlon** (v10) : deux nouveaux onglets du coach, **Trail > 50 km** et **Triathlon > L**
+  (Half Iron Man), prêts à recevoir d'autres formats. Plans décrits séance par séance (étiquette ou
+  discipline, description, statut **Obligatoire / Optionnel**, **note technique**), **note
+  d'introduction**, **courses intermédiaires** avec temps saisi par l'élève, et en triathlon **« Choisir
+  mes séances »** chaque semaine. **Nutrition du jour de course** modifiable pour chaque distance.
 
 ---
 
@@ -137,6 +142,42 @@ Dates : la dernière semaine est celle de la course ; chaque séance peut avoir 
 « Si 4 séances ». Le coach fixe la fréquence par défaut (**2, 3 ou 4 séances**), l'élève peut la
 changer. À 3 séances, les séances « Si 4 séances » sont retirées ; à 2 séances, on garde en plus la
 première et la dernière séance de chaque semaine (et toujours le jour de course).
+
+---
+
+### Trail 50 km et Triathlon L (v10)
+
+- **Trail > 50 km** : le plan « trail long » de référence, 11 semaines en trois phases (A développement
+  général S1-S4, B travail spécifique S5-S9, C relâchement S10-S11), 3 séances obligatoires + 1
+  optionnelle par semaine, chacune avec son jour, son étiquette (VMA, Côtes, SL, Fartlek, M/D, VTT,
+  Footing…), sa description et son statut. La **note technique** du parcours « triangle » est rattachée
+  aux séances M/D. Dernière ligne : **JOUR J (Compétition, 50 km)**, l'élève y saisit son temps.
+  Dans le document, les semaines 11 et 12 avaient les mêmes dates (semaine du 7 septembre) : elles ne
+  forment qu'une semaine, la semaine de course.
+- **Triathlon > L (Half Iron Man)** : 10 semaines, sans semaines préparatoires avant la semaine 1.
+  Chaque jour a sa discipline (**Sortie natation, Sortie vélo, Course à pied, Enchaînement**) avec sa
+  durée et sa description détaillée. **Courses intermédiaires** : triathlon sprint (S6) et distance
+  olympique (S8), l'élève y note son temps (distinct du JOUR J). Les tableaux de chiffres de la fin du
+  document ne sont pas repris.
+- Pas d'allures calculées ni de choix 2/3/4 séances : la **date de course** suffit (les dates sont
+  calculées à rebours, comme pour la route). **Objectif** et **VMA** sont facultatifs ; avec une VMA,
+  les séances « à 105 % VMA » affichent l'allure correspondante (« Pour toi : 105 % VMA = 3'34" /km »).
+- **Note d'introduction** : en haut de l'onglet « Plan de l'élève » et du modèle de référence
+  (« Note d'introduction »). L'élève la lit, repliée, en haut de son planning. Elle existe aussi pour
+  les plans de route (vide par défaut : rien ne change pour eux).
+- Le coach ajoute, modifie ou supprime semaines et séances comme pour la route (colonnes Type,
+  Description, Statut, Note technique ; en triathlon, la discipline se choisit dans une liste).
+- **Ajouter un autre format plus tard** (Trail 80 km, Triathlon M…) : une ligne dans
+  `core/config.py` (DISTANCES) et son modèle dans `core/modeles_trail_tri.py` ; le sous-onglet
+  apparaît tout seul.
+
+### Nutrition du jour de course (v10)
+
+Chaque distance (Marathon, Semi, 10 km, Trail, Triathlon) a sa vue **« Nutrition jour J »** : un texte
+proposé, que tu modifies et enregistres. Pour un élève en particulier, onglet **Nutrition** de sa
+fiche : un texte perso (vide = celui de la distance). L'élève le voit sur sa **carte du jour J** et,
+la semaine de course, sous sa **checklist** (pas dans Mon Planning). Il figure aussi en fin de plan
+imprimé.
 
 ---
 
@@ -260,6 +301,10 @@ première et la dernière séance de chaque semaine (et toujours le jour de cour
   l'élève et semaines modifiées, dernière séance), l'historique des courses, l'analyse de progression
   et les derniers ressentis.
 - Les exports Excel / CSV / impression de l'élève contiennent ses ressentis et commentaires.
+- **Trail / triathlon** : une séance « Optionnel » non faite n'est jamais comptée comme manquée (ni
+  dans la progression, ni dans « À surveiller ») ; faite, elle compte en bonus. En triathlon, les
+  séances que l'élève a écartées (« Choisir mes séances ») sont listées sous la semaine et dans ses
+  Réglages, avec les temps de ses courses intermédiaires. Graphique de volume en heures.
 
 ## 10. Visuels
 
@@ -282,7 +327,15 @@ data/parcours.xlsx            parcours proposés aux élèves (onglet Parcours)
 data/coach/<id>.xlsx          réponses du coach et alertes « vues » (écrit par le coach seulement)
 data/reglages.xlsx            réglages des e-mails (adresse du coach, récap, alertes)
 data/checklist.xlsx           checklist du jour J (si tu l'as modifiée)
+data/nutrition.xlsx           conseils nutrition du jour J par distance (si tu les as modifiés)
+data/modeles/trail50.xlsx,    modèles Trail 50 km et Triathlon L (créés au premier démarrage de la v10)
+data/modeles/triL.xlsx
 ```
+
+v10 : dans `data/eleves/<id>.xlsx`, un onglet `plan` (note d'introduction) apparaît seulement si la
+note n'est pas vide ; dans `data/suivi/<id>.xlsx`, une colonne `temps` (courses intermédiaires) et un
+onglet `ecartees` (triathlon) seulement si l'élève s'en sert. Les fichiers existants sont relus tels
+quels.
 
 ## 12. Structure du code
 
@@ -292,7 +345,8 @@ core/                 logique métier, sans Streamlit
   calculs.py          conversions, allures par objectif et par VMA
   moteur.py           calcul double d'un élève, comparaison, méthode retenue
   plan.py             semaines / séances (jour, allures multiples), tableaux calculés
-  modeles.py          modèles des 3 distances (dont le 10 km de l'Excel)
+  modeles.py          modèles des distances de route (dont le 10 km de l'Excel)
+  modeles_trail_tri.py modèles Trail 50 km et Triathlon L (transcrits des plans de référence)
   referentiel.py      formules globales, modèles enregistrés, mises à jour
   profils.py          élèves et programmes, codes d'accès, correction de l'e-mail
   suivi.py            séances réalisées, ressentis, prochaine séance, carnet (côté élève)
@@ -306,7 +360,7 @@ core/                 logique métier, sans Streamlit
   alertes.py          tableau « À surveiller »
   agenda.py           jour de chaque séance, fichier agenda (.ics)
   records.py          records personnels
-  reglages.py         réglages des e-mails, checklist du jour J
+  reglages.py         réglages des e-mails, checklist du jour J, nutrition du jour de course
   stockage.py         fichiers locaux + copie GitHub
   exports.py          Excel, CSV, document imprimable
   auth.py             codes d'accès
@@ -315,7 +369,8 @@ ui/                   interface
   composants.py       éditeur de plan, éditeurs de formules, exports
   editeur.py          interface coach (distances, réglages)
   supervision.py      supervision et onglet Suivi de la fiche (lecture seule)
-  planning.py         « Mon Planning » (élève), « Modifier ma semaine », suivi semaine par semaine (coach)
+  planning.py         « Mon Planning » (élève), « Modifier ma semaine », « Choisir mes séances »
+                      (triathlon), suivi semaine par semaine (coach)
   progression.py      graphiques de progression (Plotly)
   parcours.py         découverte de parcours (élève) et onglet Parcours (coach)
   eleve.py            espace élève (aussi affiché au coach, en lecture seule)

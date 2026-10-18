@@ -17,7 +17,7 @@ import streamlit as st
 from core import alertes, historique, profils, reponses, suivi
 from core.calculs import format_race_time, fr_number
 from core.config import DISTANCES
-from core.plan import is_race_day
+from core.plan import is_optional, is_race_day, session_label
 from core.profils import Student
 from ui import composants as ui
 from ui import planning, progression
@@ -46,7 +46,11 @@ def history_table(records: list, with_student: bool = True, key: str = "hist") -
 
 
 def frequency_text(s: Student, stt: historique.ProgramState, short: bool = False) -> str:
-    """Séances par semaine affichées à l'élève, ex. « 2 (élève), 1 sem. modifiée » ou « 4 »."""
+    """Séances par semaine affichées à l'élève, ex. « 2 (élève), 1 sem. modifiée » ou « 4 ».
+    Trail / triathlon : « — » (le plan fixe les séances ; en triathlon, nombre de séances écartées)."""
+    if not DISTANCES[s.distance].uses_paces:
+        n_out = len(stt.suivi.excluded)
+        return f"— ({n_out} écartée{'s' if n_out > 1 else ''})" if n_out else "—"
     chosen = stt.suivi.frequence or s.frequence_eleve
     out = str(stt.frequency)
     if chosen and chosen != s.frequence_defaut:
@@ -57,9 +61,48 @@ def frequency_text(s: Student, stt: historique.ProgramState, short: bool = False
     return out
 
 
+def _multi_choices_html(s: Student, stt: historique.ProgramState) -> str:
+    """Trail / triathlon : séances écartées par l'élève (triathlon), séances optionnelles faites (trail)."""
+    sv = stt.suivi
+    items = []
+    if DISTANCES[s.distance].sport == "triathlon":
+        out = {}
+        for _, w in s.plan.weeks.sort_values("position").iterrows():
+            rows = planning._plan_week_sessions(s, w["week_id"])
+            names = [planning._choice_label(r) for _, r in rows.iterrows() if r["session_id"] in sv.excluded]
+            if names:
+                out[int(w["position"])] = names
+        if out:
+            items.append("Séances écartées par l'élève (« Choisir mes séances ») : " + " ; ".join(
+                f"semaine {p + 1} : {html.escape(', '.join(n))}" for p, n in out.items()) + ".")
+        else:
+            items.append("L'élève garde toutes les séances prévues (il n'en a écarté aucune).")
+    else:
+        table = stt.table
+        opt = [r for _, r in table.iterrows() if is_optional(r)] if not table.empty else []
+        n_done = sum(1 for r in opt if suivi.is_done(r, sv))
+        items.append(f"Séances optionnelles faites : <b>{n_done}</b> sur {len(opt)}." if opt else
+                     "Aucune séance optionnelle dans ce plan.")
+    times = {sid: t for sid, t in sv.times.items()}
+    if times and not stt.table.empty:
+        rows = {r["session_id"]: r for _, r in stt.table.iterrows()}
+        done = [f"{html.escape(session_label(rows[sid]))} en <b>{html.escape(planning.chrono_text(t))}</b>"
+                for sid, t in times.items() if sid in rows]
+        if done:
+            items.append("Courses intermédiaires : " + " ; ".join(done) + ".")
+    if sv.maj_le:
+        items.append(f"Dernière action de l'élève : le {sv.maj_le[8:10]}/{sv.maj_le[5:7]} à {sv.maj_le[11:16]}.")
+    if not sv.recap:
+        items.append("Il a désactivé le récap du dimanche par e-mail.")
+    lis = "".join(f"<li>{x}</li>" for x in items)
+    return f"<div class='choices'><div class='ch-t'>Réglages de l'élève</div><ul>{lis}</ul></div>"
+
+
 def choices_html(s: Student, stt: historique.ProgramState) -> str:
     """Ce que l'élève a réglé lui-même dans son espace : séances par semaine, semaines modifiées."""
     sv = stt.suivi
+    if not DISTANCES[s.distance].uses_paces:
+        return _multi_choices_html(s, stt)
     chosen = sv.frequence or s.frequence_eleve
     items = []
     if chosen and chosen != s.frequence_defaut:
@@ -283,7 +326,8 @@ def render_overview() -> None:
               (f"{' / ' if s.objectif else ''}VMA {fr_number(s.vma)}" if s.vma is not None else "")
         rows.append({"Élève": s.display_name, "Course": s.race_name, "Distance": DISTANCES[s.distance].label,
                      "Date": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
-                     "Méthode": "VMA" if stt.sp.method == "vma" else "Objectif", "Objectif / VMA": ref,
+                     "Méthode": ("VMA" if stt.sp.method == "vma" else "Objectif")
+                     if DISTANCES[s.distance].uses_paces else "—", "Objectif / VMA": ref,
                      "Séances/sem.": frequency_text(s, stt, short=True),
                      "Progression": round(pr.ratio * 100), "Réalisées": f"{pr.done}/{pr.total}",
                      "Dernière séance": _fmt_day(pr.last_date)})

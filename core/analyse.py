@@ -14,7 +14,7 @@ import pandas as pd
 
 from . import suivi as sv_mod
 from .agenda import session_days
-from .calculs import parse_km_range
+from .calculs import parse_duration_minutes, parse_km_range
 from .config import DISTANCES, FEELINGS
 from .exports import fr_date
 
@@ -25,7 +25,7 @@ def _km(value) -> float:
 
 
 WEEKLY_COLUMNS = ["position", "semaine", "periode", "statut", "faites", "manquees", "excusees", "a_venir", "prevues",
-                  "km_prevus", "km_courus"]
+                  "km_prevus", "km_courus", "h_prevues", "h_faites"]
 
 
 def _excused(sv, r, start, day: date | None) -> bool:
@@ -58,11 +58,15 @@ def weekly_frame(state, today: date | None = None) -> pd.DataFrame:
         dated = isinstance(start, date)
         status = ("passee" if end < today else "en_cours" if start <= today else "a_venir") if dated else "sans_date"
         done = missed = excused = 0
-        km_run = 0.0
-        for _, r in sub.iterrows():
+        km_run = minutes_done = minutes_planned = 0.0
+        counted = [r for _, r in sub.iterrows() if sv_mod.is_counted(r, sv)]     # optionnelles : si faites
+        for r in counted:
+            minutes = parse_duration_minutes(r["duree_env"]) or 0.0
+            minutes_planned += minutes
             if sv_mod.is_done(r, sv):
                 done += 1
                 km_run += sv_mod.km_run(r, sv)
+                minutes_done += minutes
             elif _excused(sv, r, start, days.get(r["session_id"])):
                 excused += 1
             elif sv_mod.is_skipped(r, sv) or status == "passee":
@@ -71,9 +75,10 @@ def weekly_frame(state, today: date | None = None) -> pd.DataFrame:
             "position": int(pos), "semaine": f"S{int(pos) + 1}",
             "periode": f"du {fr_date(start)} au {fr_date(end)}" if dated else f"Semaine {int(pos) + 1}",
             "statut": status, "faites": done, "manquees": missed, "excusees": excused,
-            "a_venir": len(sub) - done - missed - excused, "prevues": len(sub),
-            "km_prevus": round(sum(_km(k) for k in sub["km_env"]), 1),
+            "a_venir": len(counted) - done - missed - excused, "prevues": len(counted),
+            "km_prevus": round(sum(_km(r["km_env"]) for r in counted), 1),
             "km_courus": round(km_run, 1),
+            "h_prevues": round(minutes_planned / 60, 2), "h_faites": round(minutes_done / 60, 2),
         })
     return pd.DataFrame(rows, columns=WEEKLY_COLUMNS)
 
@@ -122,7 +127,8 @@ def races_frame(records: list) -> pd.DataFrame:
             "temps": r.race_time, "temps_s": r.race_seconds, "objectif": r.objective,
             "objectif_s": objective_s, "ecart": r.gap, "ecart_s": r.gap_seconds,
             "ecart_pct": round(100 * r.gap_seconds / objective_s, 1) if objective_s else None,
-            "allure_s": r.race_seconds / km, "eleve": r.name,
+            # allure moyenne : route seulement (en trail et triathlon elle ne veut rien dire)
+            "allure_s": r.race_seconds / km if DISTANCES[r.distance].uses_paces else None, "eleve": r.name,
         })
     df = pd.DataFrame(rows, columns=["course", "distance", "date", "temps", "temps_s", "objectif", "objectif_s",
                                      "ecart", "ecart_s", "ecart_pct", "allure_s", "eleve"])

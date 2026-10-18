@@ -31,6 +31,9 @@ class PersonalRecord:
 
     @property
     def pace_str(self) -> str:
+        """Allure moyenne (route) ; vide en trail et triathlon, où elle ne veut rien dire."""
+        if not DISTANCES[self.distance].uses_paces:
+            return ""
         per_km = self.seconds / DISTANCES[self.distance].km
         m, s = divmod(round(per_km), 60)
         return f"{m}'{s:02d}\" /km"

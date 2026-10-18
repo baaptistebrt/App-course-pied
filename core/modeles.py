@@ -18,6 +18,7 @@ et la sortie longue, et on retire en priorité le footing d'endurance.
 from __future__ import annotations
 
 from .config import FREQ_ALWAYS, FREQ_ONLY_4, RACE_DAY_LABEL
+from .modeles_trail_tri import TRAIL_TRI_INTROS, TRAIL_TRI_TEMPLATES
 
 TAPER = "Affûtage : assimilation / récupération / refaire du jus !"
 
@@ -195,4 +196,6 @@ TEN_K: list[dict] = [
     ]},
 ]
 
-DEFAULT_TEMPLATES: dict[str, list[dict]] = {"marathon": MARATHON, "semi": SEMI, "10k": TEN_K}
+DEFAULT_TEMPLATES: dict[str, list[dict]] = {"marathon": MARATHON, "semi": SEMI, "10k": TEN_K, **TRAIL_TRI_TEMPLATES}
+# Note d'introduction des modèles (vide pour la route : le coach peut en écrire une).
+DEFAULT_INTROS: dict[str, str] = dict(TRAIL_TRI_INTROS)

@@ -1,6 +1,7 @@
 """
-Réglages du coach enregistrés avec les données (`data/reglages.xlsx`) et checklist du jour J
-(`data/checklist.xlsx`), modifiables dans l'onglet Réglages.
+Réglages du coach enregistrés avec les données (`data/reglages.xlsx`), checklist du jour J
+(`data/checklist.xlsx`) et conseils nutrition du jour de course par distance (`data/nutrition.xlsx`),
+modifiables dans l'onglet Réglages et dans l'onglet de chaque distance.
 
 Réglages : e-mail du coach (alertes et récap), récap du dimanche pour les élèves et pour le coach,
 e-mail au coach quand un élève signale une douleur ou une absence.
@@ -72,7 +73,8 @@ def save_settings(store: Store, settings: Settings) -> None:
 # Checklist du jour J
 # ----------------------------------------------------------------------------
 MOMENTS = ["La veille", "Le matin", "Échauffement", "Manger et boire", "Pendant la course"]
-FOR_OPTIONS = {"toutes": "Toutes les distances", "10k": "10 km", "semi": "Semi-marathon", "marathon": "Marathon"}
+FOR_OPTIONS = {"toutes": "Toutes les distances", "10k": "10 km", "semi": "Semi-marathon", "marathon": "Marathon",
+               "trail50": "Trail 50 km", "triL": "Triathlon L"}
 
 DEFAULT_CHECKLIST = [
     ("toutes", "La veille", "Prépare ta tenue, tes chaussures, ton dossard et tes épingles"),
@@ -90,6 +92,13 @@ DEFAULT_CHECKLIST = [
     ("semi", "Manger et boire", "Prends de l'eau aux ravitaillements ; un gel vers le 12e km si tu l'as testé"),
     ("marathon", "Manger et boire", "Gels testés à l'entraînement, toutes les 30 à 45 min, avec de l'eau"),
     ("toutes", "Pendant la course", "Pars à ton allure, pas plus vite : les premiers km doivent sembler faciles"),
+    # v10 : trail et triathlon (ajoutés à la liste par défaut ; une checklist déjà enregistrée n'est pas modifiée)
+    ("trail50", "La veille", "Prépare et vérifie le matériel obligatoire (réserve d'eau, couverture de survie, "
+                             "frontale, coupe-vent…)"),
+    ("trail50", "Pendant la course", "Marche dans les fortes montées dès le début : garde de l'énergie pour la fin"),
+    ("triL", "La veille", "Dépose ton vélo au parc et repère les entrées et sorties des transitions"),
+    ("triL", "Le matin", "Prépare ta zone de transition : casque, chaussures, dossard, lunettes, gels"),
+    ("triL", "Pendant la course", "Vélo : reste à ton allure Half Iron Man, même si on te double"),
 ]
 
 
@@ -136,3 +145,76 @@ def checklist_for(items: list[ChecklistItem], distance: str) -> list[tuple[str, 
     mine = [i for i in items if i.pour in ("toutes", distance)]
     order = MOMENTS + sorted({i.moment for i in mine} - set(MOMENTS))
     return [(m, [i for i in mine if i.moment == m]) for m in order if any(i.moment == m for i in mine)]
+
+
+# ----------------------------------------------------------------------------
+# Nutrition le jour de la course (un texte par distance, modifiable dans l'onglet de la distance)
+# ----------------------------------------------------------------------------
+NUTRITION_FILE = "nutrition.xlsx"
+
+DEFAULT_NUTRITION: dict[str, str] = {
+    "marathon": (
+        "La veille : un repas habituel riche en féculents (pâtes, riz, pommes de terre), sans excès de graisses ni "
+        "de fibres. Bois régulièrement.\n"
+        "Le matin : petit-déjeuner 3 h avant le départ, déjà testé à l'entraînement (pain ou céréales, miel, banane, "
+        "boisson chaude).\n"
+        "Pendant la course : bois un peu à chaque ravitaillement ; prends un gel (ou l'équivalent) toutes les 30 à "
+        "45 min à partir de la 45e minute, toujours avec de l'eau.\n"
+        "Après : bois et mange dans l'heure (fruit, barre, boisson de récupération).\n"
+        "Rien de nouveau le jour J : tout doit avoir été testé sur tes sorties longues."),
+    "semi": (
+        "La veille : un repas habituel avec des féculents, sans excès.\n"
+        "Le matin : petit-déjeuner 2 à 3 h avant le départ, déjà testé à l'entraînement.\n"
+        "Pendant la course : quelques gorgées d'eau aux ravitaillements ; un gel vers le 12e km si tu l'as testé.\n"
+        "Après : bois et mange un fruit ou une barre.\n"
+        "Rien de nouveau le jour J."),
+    "10k": (
+        "La veille : un repas habituel, pas besoin de faire le plein de féculents.\n"
+        "Le matin : petit-déjeuner léger 2 à 3 h avant le départ.\n"
+        "Pendant la course : pas de ravitaillement nécessaire ; une gorgée d'eau s'il fait chaud.\n"
+        "Après : bois et mange un fruit ou une barre."),
+    "trail50": (
+        "La veille : repas riche en féculents ; bois régulièrement.\n"
+        "Le matin : petit-déjeuner 3 h avant le départ, déjà testé sur tes sorties longues.\n"
+        "Pendant la course : environ 60 g de glucides par heure dès la première heure (gels, barres, pâtes de "
+        "fruits, compotes) et 500 à 750 ml de boisson par heure selon la chaleur. Pense au salé aux "
+        "ravitaillements (soupe, bouillon, fromage) sur la deuxième moitié.\n"
+        "Emporte toujours l'eau et le matériel demandés par l'organisation.\n"
+        "Rien de nouveau le jour J : tout doit avoir été testé sur tes SL."),
+    "triL": (
+        "La veille : repas riche en féculents ; bois régulièrement.\n"
+        "Le matin : petit-déjeuner 3 h avant le départ, déjà testé à l'entraînement.\n"
+        "Natation : rien à prendre ; un gel 15 min avant le départ si tu en as l'habitude.\n"
+        "Vélo : c'est là qu'on mange et qu'on boit : 60 à 90 g de glucides par heure (barres, gels, boisson "
+        "énergétique) et 500 à 750 ml par heure, par petites prises régulières.\n"
+        "Course à pied : un gel toutes les 30 à 45 min avec de l'eau, et bois à chaque ravitaillement.\n"
+        "Rien de nouveau le jour J : tout doit avoir été testé sur tes enchaînements."),
+}
+
+
+def load_nutrition(store: Store) -> dict[str, str]:
+    """{distance: conseils} ; texte proposé par défaut tant que le coach n'a pas écrit le sien."""
+    out = dict(DEFAULT_NUTRITION)
+    if store.exists(NUTRITION_FILE):
+        try:
+            df = read_workbook(store.read(NUTRITION_FILE)).get("nutrition", pd.DataFrame())
+        except ValueError:
+            df = pd.DataFrame()
+        for _, r in df.iterrows():
+            key = _text(r.get("distance"))
+            if key:
+                out[key] = _text(r.get("texte"))
+    return out
+
+
+def save_nutrition(store: Store, distance: str, text: str) -> None:
+    current = load_nutrition(store)
+    current[distance] = str(text or "").strip()
+    df = pd.DataFrame([{"distance": k, "texte": v} for k, v in current.items()], columns=["distance", "texte"])
+    store.write(NUTRITION_FILE, write_workbook({"nutrition": df}))
+
+
+def nutrition_for(store: Store, student) -> str:
+    """Conseils nutrition de l'élève : son texte perso, sinon celui de sa distance."""
+    own = str(getattr(student, "nutrition", "") or "").strip()
+    return own or load_nutrition(store).get(student.distance, "")

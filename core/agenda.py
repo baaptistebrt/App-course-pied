@@ -15,7 +15,8 @@ from datetime import date, datetime, timedelta, timezone
 import pandas as pd
 
 from .config import DAYS, PACE_LABELS
-from .plan import is_empty_session, is_race_day, pace_codes
+from .plan import (ACTIVITY_EMOJI, activity_kind, is_empty_session, is_optional, is_race_day, pace_codes,
+                   session_heading)
 
 # Jours conseillés quand le coach n'a pas fixé le jour d'une séance (0 = lundi), selon le nombre de séances.
 SUGGESTED_DAYS = {1: [5], 2: [1, 5], 3: [1, 3, 6], 4: [1, 3, 5, 6], 5: [0, 1, 3, 5, 6], 6: [0, 1, 2, 3, 5, 6]}
@@ -102,6 +103,8 @@ def _fold(line: str) -> str:
 def _title(r) -> str:
     if is_race_day(r["seance"]):
         return "Jour J"
+    if str(r.get("tag") or "").strip():           # trail / triathlon : étiquette ou discipline
+        return session_heading(r)[0] or "Séance"
     return str(r["contenu"] or "Séance").strip()
 
 
@@ -120,10 +123,14 @@ def ics_calendar(student, table: pd.DataFrame, paces: dict, app_url: str = "", t
         if day is None or day < today:
             continue
         race = is_race_day(r["seance"])
-        summary = f"🏁 Jour J : {name}" if race else f"🏃 {_title(r)}"
+        emoji = ACTIVITY_EMOJI.get(activity_kind(r), "🏃") if str(r.get("tag") or "").strip() else "🏃"
+        summary = f"🏁 Jour J : {name}" if race else f"{emoji} {_title(r)}" + (" (optionnelle)" if is_optional(r) else "")
         desc = []
         if str(r.get("intensite") or "").strip():
             desc.append(f"Intensité : {str(r['intensite']).strip()}")
+        text = session_heading(r)[1] if not race else ""
+        if text:                                   # trail / triathlon : description complète
+            desc.append(text)
         facts = [f"{r['km_env']} km" if r["km_env"] else "", r["duree_env"] or "",
                  f"dont {r['temps_aff']} à l'allure" if r["temps_aff"] and not race else ""]
         if any(facts):
@@ -133,6 +140,8 @@ def ics_calendar(student, table: pd.DataFrame, paces: dict, app_url: str = "", t
                 desc.append(f"{PACE_LABELS[code]} : {paces[code].pace_str} /km")
         if r["remarque"]:
             desc.append(str(r["remarque"]))
+        if str(r.get("note") or "").strip():
+            desc.append(f"Note technique : {str(r['note']).strip()}")
         if app_url:
             desc.append(f"Coche ta séance : {app_url}")
         lines += ["BEGIN:VEVENT", f"UID:{r['session_id']}@coach-running", f"DTSTAMP:{stamp}",

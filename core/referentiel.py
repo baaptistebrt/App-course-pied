@@ -14,14 +14,14 @@ import pandas as pd
 from .calculs import clean_ratios, clean_vma_pct
 from .config import (DEFAULT_RATIOS, DEFAULT_VMA_PCT, DISTANCE_KEYS, PACE_CODES, RATIO_CODES, SESSION_COLUMNS,
                      WEEK_COLUMNS)
-from .modeles import DEFAULT_TEMPLATES
+from .modeles import DEFAULT_INTROS, DEFAULT_TEMPLATES
 from .plan import Plan
 from .stockage import Store, read_workbook, write_workbook
 
 RATIOS_FILE = "formules.xlsx"
 # Version des modèles par défaut. Un modèle enregistré avec une version plus ancienne est remplacé
 # au démarrage (l'ancien est gardé en « modeles/<distance>_v<n>.xlsx »). 10 km v3 = fichier Excel de Maud.
-TEMPLATE_VERSIONS: dict[str, int] = {"marathon": 2, "semi": 2, "10k": 3}
+TEMPLATE_VERSIONS: dict[str, int] = {"marathon": 2, "semi": 2, "10k": 3, "trail50": 1, "triL": 1}
 
 
 def template_file(distance: str) -> str:
@@ -33,7 +33,10 @@ def template_file(distance: str) -> str:
 # ----------------------------------------------------------------------------
 def plan_to_sheets(plan: Plan) -> dict[str, pd.DataFrame]:
     plan = plan.normalized()
-    return {"semaines": plan.weeks[WEEK_COLUMNS], "seances": plan.sessions[SESSION_COLUMNS]}
+    sheets = {"semaines": plan.weeks[WEEK_COLUMNS], "seances": plan.sessions[SESSION_COLUMNS]}
+    if plan.intro:                                   # note d'introduction (onglet absent si vide)
+        sheets["plan"] = pd.DataFrame([("intro", plan.intro)], columns=["cle", "valeur"])
+    return sheets
 
 
 def plan_from_sheets(sheets: dict[str, pd.DataFrame]) -> Plan:
@@ -51,7 +54,13 @@ def plan_from_sheets(sheets: dict[str, pd.DataFrame]) -> Plan:
     if missing.any():
         sessions.loc[missing, "session_id"] = [f"{w}-{o}" for w, o in zip(sessions.loc[missing, "week_id"],
                                                                           sessions.loc[missing, "ordre"])]
-    return Plan(weeks[WEEK_COLUMNS], sessions[SESSION_COLUMNS]).normalized()
+    intro = ""
+    info = sheets.get("plan")
+    if info is not None and not info.empty and "cle" in info.columns:
+        values = {str(k): v for k, v in zip(info["cle"], info["valeur"])}
+        raw = values.get("intro")
+        intro = "" if raw is None or (isinstance(raw, float) and pd.isna(raw)) else str(raw).strip()
+    return Plan(weeks[WEEK_COLUMNS], sessions[SESSION_COLUMNS], intro).normalized()
 
 
 # ----------------------------------------------------------------------------
@@ -117,7 +126,7 @@ def save_global_vma_pct(store: Store, distance: str, pct: dict) -> None:
 # Modèles de référence
 # ----------------------------------------------------------------------------
 def default_template(distance: str) -> Plan:
-    return Plan.from_week_list(DEFAULT_TEMPLATES[distance])
+    return Plan.from_week_list(DEFAULT_TEMPLATES[distance], DEFAULT_INTROS.get(distance, ""))
 
 
 def load_template(store: Store, distance: str) -> Plan:

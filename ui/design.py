@@ -29,7 +29,8 @@ import streamlit as st
 from core.calculs import Pace, format_minutes, format_race_time
 from core.config import DISTANCES, PACE_BY_CODE, PACE_LABELS, ZONE_COLORS
 from core.exports import fr_date
-from core.plan import is_race_day, pace_codes, week_summary
+from core.plan import (is_optional, is_race_day, pace_codes, session_heading, session_label,
+                       vma_hints, week_summary)
 from core.stockage import Store
 
 ASSETS = Path(__file__).resolve().parent / "assets"
@@ -223,6 +224,17 @@ button[kind="primary"]:hover, [data-testid="stBaseButton-primary"]:hover,
 .nx .facts { display: flex; flex-wrap: wrap; gap: 4px 20px; color: var(--muted); align-items: baseline; }
 .nx .facts b { color: var(--night); font-family: var(--cond); font-size: 1.3rem; font-weight: 700; }
 .nx .note { font-style: italic; color: var(--night); margin-top: 6px; }
+.nx-desc { white-space: pre-line; color: var(--night); line-height: 1.45; margin: -4px 0 8px; }
+.nx-hint { color: var(--track); font-size: .92rem; margin: -2px 0 8px; }
+.pl-badge { display: inline-block; font-size: .74rem; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
+            color: #5B6B7F; background: #EEF2F7; border: 1px dashed #B8C4D3; border-radius: 999px; padding: 1px 9px; }
+details.pl-tech { margin: 6px 0; font-size: .92rem; }
+details.pl-tech summary { cursor: pointer; color: var(--track); font-weight: 600; }
+details.pl-tech > div { white-space: pre-line; background: #F4F7FB; border-left: 3px solid var(--track);
+                        border-radius: 0 8px 8px 0; padding: 8px 12px; margin-top: 6px; color: var(--night); }
+.nut { background: #fff; border-radius: 10px; padding: 10px 14px; margin-top: 12px; border-left: 4px solid #2F9E6E; }
+.nut-h { font-weight: 700; color: var(--night); }
+.nut-t { white-space: pre-line; color: var(--night); font-size: .95rem; line-height: 1.5; margin-top: 4px; }
 .lane { display: grid; grid-template-columns: 9px 1fr auto; gap: 14px; align-items: center; background: var(--concrete);
         border-radius: 9px; padding: 0 16px 0 0; margin-top: 10px; overflow: hidden; min-height: 54px; }
 .lane .bar { align-self: stretch; }
@@ -370,7 +382,8 @@ def pills(value, paces: dict[str, Pace]) -> str:
 
 
 def session_title(r) -> str:
-    return str(r["contenu"] or ("Séance à l'allure indiquée" if r["allure"] else "Séance libre"))
+    """Titre d'une séance sur une ligne (carnet, alertes, réponses du coach) : voir core/plan.session_label."""
+    return session_label(r)
 
 
 def session_meta(r, race: bool = False) -> str:
@@ -513,10 +526,13 @@ def bib(name: str, distance: str, race_seconds: int, estimate: bool, race_date: 
     else:
         when = (f"{dist.label}, plan" if course else "Plan") + f" de {n_weeks} semaines"
     done = f"<div class='done'>Réalisé en {e(race_time)}</div>" if race_time else ""
-    return (f"<div class='bib' role='img' aria-label='Dossard : {e(name)}, objectif {e(format_race_time(race_seconds))}'>"
+    # Trail / triathlon sans objectif de temps : la distance sur le dossard.
+    num = format_race_time(race_seconds) if race_seconds else f"{dist.km:g} km".replace(".", ",")
+    aria = f"objectif {num}" if race_seconds else num
+    return (f"<div class='bib' role='img' aria-label='Dossard : {e(name)}, {e(aria)}'>"
             f"<span class='pin tl'></span><span class='pin tr'></span><span class='pin bl'></span><span class='pin br'></span>"
             f"<div class='band'>{e(course or dist.label)}</div>"
-            f"<div class='num'>{e(format_race_time(race_seconds))}</div>"
+            f"<div class='num'>{e(num)}</div>"
             f"{'<div class=est>temps estimé d’après ta VMA</div>' if estimate else ''}"
             f"<div class='who'>{e(name)}</div><div class='when'>{e(when)}</div>{done}</div>")
 
@@ -545,9 +561,25 @@ def pace_lane_rows(value, paces: dict[str, Pace]) -> str:
     return "".join(out)
 
 
-def next_session_html(r, paces: dict[str, Pace], when: str) -> str:
-    """Carte « Ta prochaine séance » : quoi, combien, à quelle allure."""
+def multi_body_html(r, vma: float | None = None) -> str:
+    """Trail / triathlon : description complète, pastille « Optionnel », allure des « x % VMA » et note
+    technique dépliable (carte « Ta prochaine séance »)."""
+    _, text = session_heading(r)
+    out = f"<div class='nx-desc'>{e(text)}</div>" if text else ""
+    hints = vma_hints(str(r.get("contenu") or ""), vma) if vma else []
+    if hints:
+        out += f"<div class='nx-hint'>Pour toi : {e(' · '.join(hints))}</div>"
+    note = str(r.get("note") or "").strip()
+    if note:
+        out += f"<details class='pl-tech'><summary>Note technique</summary><div>{e(note)}</div></details>"
+    return out
+
+
+def next_session_html(r, paces: dict[str, Pace], when: str, vma: float | None = None) -> str:
+    """Carte « Ta prochaine séance » : quoi, combien, à quelle allure (trail / triathlon : la description)."""
     facts = []
+    if is_optional(r):
+        facts.append("<span class='pl-badge'>Optionnel</span>")
     if r["km_env"]:
         facts.append(f"<span><b>{e(str(r['km_env']))}</b> km</span>")
     if r["duree_env"]:
@@ -555,14 +587,33 @@ def next_session_html(r, paces: dict[str, Pace], when: str) -> str:
     if r["temps_aff"]:
         facts.append(f"<span>dont <b>{e(str(r['temps_aff']))}</b> à l'allure</span>")
     note = f"<div class='note'>{e(str(r['remarque']))}</div>" if r["remarque"] else ""
-    return (f"<div class='nx'><div class='when'>{e(when)}</div><h3>{e(session_title(r))}</h3>"
-            f"<div class='facts'>{''.join(facts)}</div>{note}{pace_lane_rows(r['allure'], paces)}</div>")
-
-
-def race_card_html(r, paces: dict[str, Pace], when: str, race_time: str) -> str:
-    title = f"Ton chrono : {race_time}" if race_time else session_title(r)
-    return (f"<div class='nx'><div class='when'>{e(when)}</div><h3>🏁 {e(title)}</h3>"
+    title = session_heading(r)[0]
+    return (f"<div class='nx'><div class='when'>{e(when)}</div><h3>{e(title)}</h3>"
+            f"{multi_body_html(r, vma)}<div class='facts'>{''.join(facts)}</div>{note}"
             f"{pace_lane_rows(r['allure'], paces)}</div>")
+
+
+def nutrition_html(text: str) -> str:
+    """Conseils nutrition du jour J (texte du coach), sous la carte de course."""
+    text = str(text or "").strip()
+    if not text:
+        return ""
+    return f"<div class='nut'><div class='nut-h'>🍝 Nutrition du jour J</div><div class='nut-t'>{e(text)}</div></div>"
+
+
+def race_card_html(r, paces: dict[str, Pace], when: str, race_time: str, nutrition: str = "",
+                   facts: bool = False) -> str:
+    """Carte du jour J. `facts` (trail, triathlon) : distance et remarque de la ligne JOUR J ; `nutrition` :
+    conseils du coach."""
+    title = f"Ton chrono : {race_time}" if race_time else session_title(r)
+    extra = ""
+    if facts:
+        items = [f"<span><b>{e(str(r['km_env']))}</b> km</span>" if r["km_env"] else ""]
+        extra = f"<div class='facts'>{''.join(items)}</div>" if any(items) else ""
+        if r["remarque"]:
+            extra += f"<div class='note'>{e(str(r['remarque']))}</div>"
+    return (f"<div class='nx'><div class='when'>{e(when)}</div><h3>🏁 {e(title)}</h3>{extra}"
+            f"{pace_lane_rows(r['allure'], paces)}{nutrition_html(nutrition)}</div>")
 
 
 def reply_html(reply, who: str = "Ton coach") -> str:
@@ -586,6 +637,8 @@ def journal_html(entries: list[dict], race_time: str = "", replies: dict | None 
         d = date.fromisoformat(x["when"]) if x["when"] else None
         title = session_title(r)
         chrono = f"<div class='chrono'>{e(race_time)}</div>" if x["race"] and race_time else ""
+        if not chrono and x.get("time"):
+            chrono = f"<div class='chrono'>⏱ {e(x['time'])}</div>"
         feel = f"<span class='f'>{e(note.label)}</span>" if note.ressenti else ""
         quote = f"<q>{e(note.commentaire)}</q>" if note.commentaire else ""
         skip = x.get("skip")
@@ -628,7 +681,8 @@ def history_html(records: list) -> str:
     items = []
     for r in records:
         dist = DISTANCES[r.distance].label
-        sub = (f"{dist}, " if r.course != dist else "") + ("temps estimé " if r.objective_is_estimate else "objectif ") + r.objective
+        goal = (("temps estimé " if r.objective_is_estimate else "objectif ") + r.objective) if r.objective else ""
+        sub = ", ".join(x for x in ((dist if r.course != dist else ""), goal) if x)
         gap = ""
         if r.gap:
             gap = f"<small class='{'faster' if r.gap.startswith('−') else ''}'>{e(r.gap)}</small>"

@@ -8,6 +8,11 @@ En dessous, les onglets : Mon Planning (semaine par semaine, séances par jour a
 ressenti et chrono du jour J, nombre de séances, export), Mes allures, Mon carnet, Mes courses,
 Ma progression et Découverte de parcours.
 
+Trail et triathlon (v10) : pas de choix 2/3/4 séances ni d'allure de course ; le dossard porte la
+distance quand il n'y a pas d'objectif ; les courses intermédiaires ont leur « Mon temps » ; les
+conseils nutrition du coach s'affichent sur la carte du jour J et dans la checklist de la semaine de
+course (pas dans Mon Planning).
+
 `render_space` sert aussi au coach : onglet « Vue élève » de la fiche, en lecture seule.
 Tout ce que l'élève modifie est enregistré dans SON fichier de suivi (core/suivi.py), jamais
 dans le plan lui-même.
@@ -20,10 +25,11 @@ from datetime import date
 
 import streamlit as st
 
-from core import historique, profils, records, reponses, suivi
+from core import historique, profils, records, reglages, reponses, suivi
 from core.config import COMMENT_MAX, DISTANCES, FEELINGS, FREQUENCIES
+from core.calculs import format_minutes, parse_duration_minutes
 from core.exports import fr_date
-from core.plan import is_race_day
+from core.plan import is_intermediate_race, is_race_day
 from ui import composants as ui
 from ui import eleve_extras as extras
 from ui import planning, progression, supervision
@@ -55,8 +61,15 @@ def _rel_day(d: date | None, today: date) -> str:
 
 
 def _dist_name(distance: str) -> str:
+    """« marathon », « 10 km », « trail 50 km », « triathlon L (Half Iron Man) »."""
     label = DISTANCES[distance].label
-    return label if label[0].isdigit() else label.lower()
+    return label if label[0].isdigit() else label[0].lower() + label[1:]
+
+
+def _minutes_done(table, sv) -> float:
+    """Durée prévue des séances faites (triathlon : les séances sont données en durée)."""
+    return sum(parse_duration_minutes(r["duree_env"]) or 0 for _, r in table.iterrows()
+               if suivi.is_done(r, sv) and not is_race_day(r["seance"]))
 
 
 def render_student(student_id: str, on_logout) -> None:
@@ -185,9 +198,11 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
                      disabled=readonly, label_visibility="collapsed" if compact else "visible")
             planned = str(r["km_env"] or "").strip()
             km = sv.km.get(session_id)
-            st.text_input("Km réellement courus (si différent du plan)", key=kk, disabled=readonly,
-                          value=suivi.fr_km(km) if km else "",
-                          placeholder=f"prévu : {planned} km" if planned else "ex. 8,5")
+            # triathlon : séances données en durée (natation, vélo…) : pas de km à saisir, sauf si le plan en prévoit
+            if DISTANCES[s.distance].sport != "triathlon" or planned or km:
+                st.text_input("Km réellement courus (si différent du plan)", key=kk, disabled=readonly,
+                              value=suivi.fr_km(km) if km else "",
+                              placeholder=f"prévu : {planned} km" if planned else "ex. 8,5")
             st.text_area("Un mot pour ton coach (facultatif)", value=note.commentaire, key=tk, max_chars=COMMENT_MAX,
                          height=72 if compact else 96, placeholder="Jambes, souffle, météo, douleurs…",
                          disabled=readonly)
@@ -222,6 +237,30 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
             st.form_submit_button("Enregistrer ma course", type="primary", icon=":material/flag:", disabled=readonly,
                                   on_click=save_race, args=(r["session_id"], tk, fk, ck))
 
+    def save_time(session_id: str, time_key: str, feel_key: str, text_key: str) -> None:
+        typed = st.session_state.get(time_key, "")
+        try:
+            suivi.set_session_time(store, s.id, session_id, typed)
+        except ValueError as exc:
+            ui.notify(str(exc), "error")
+            return
+        suivi.set_note(store, s.id, session_id, st.session_state.get(feel_key), st.session_state.get(text_key, ""))
+        ui.saved("Temps enregistré, bravo !" if str(typed).strip() else "Temps effacé")
+
+    def time_form(r, form_key: str) -> None:
+        """Course intermédiaire (triathlon) : temps réalisé, ressenti et récit (distinct du jour J)."""
+        sid = r["session_id"]
+        note = sv.note(sid)
+        tk, fk, ck = f"{form_key}_time", f"{form_key}_feel", f"{form_key}_text"
+        with st.form(form_key, border=False):
+            st.text_input("Ton temps (hh:mm:ss)", value=sv.times.get(sid, ""), key=tk, placeholder="ex. 1:12:30",
+                          disabled=readonly)
+            st.pills("Ton ressenti", FEEL_OPTIONS, default=note.ressenti, format_func=_feel, key=fk, disabled=readonly)
+            st.text_area("Raconte ta course", value=note.commentaire, key=ck, max_chars=COMMENT_MAX, height=100,
+                         placeholder="Transitions, sensations, ce que tu retiens pour le jour J…", disabled=readonly)
+            st.form_submit_button("Enregistrer", type="primary", icon=":material/timer:", disabled=readonly,
+                                  on_click=save_time, args=(sid, tk, fk, ck))
+
     # ------------------------------------------------------------------ bandeau : tour de piste
     dist_name = _dist_name(s.distance)
     dated = not table.empty and any(isinstance(d, date) for d in table["debut"])
@@ -237,13 +276,17 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     days_left = (s.date_course - today).days if s.date_course else None
     pct = round(pr.ratio * 100)
     hello = f"Salut {s.prenom}," if s.prenom else "Salut,"
-    race_pace = sp.paces[DISTANCES[s.distance].anchor].pace_str
+    multi = not DISTANCES[s.distance].uses_paces          # trail / triathlon : pas d'allure de course calculée
+    race_pace = "" if multi else sp.paces[DISTANCES[s.distance].anchor].pace_str
+    nutrition = reglages.nutrition_for(store, s)
 
     if pr.race_time:
         title, text = f"{DISTANCES[s.distance].label} bouclé en {pr.race_time}", \
             "Bravo ! Raconte ta course à ton coach dans la carte ci-dessous."
     elif days_left == 0:
-        title, text = "C'est le jour J", f"Ton allure de course : {race_pace} au km. Profite de chaque kilomètre."
+        title = "C'est le jour J"
+        text = (f"Ton allure de course : {race_pace} au km. Profite de chaque kilomètre." if race_pace else
+                "Ta préparation est faite : pars prudemment et profite de chaque kilomètre.")
     elif days_left is not None and days_left < 0:
         title, text = "Alors, cette course ?", "Note ton chrono et ton ressenti dans la carte ci-dessous."
     elif dated and first_start and today < first_start:
@@ -273,6 +316,9 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     else:
         big, small = f"{pct} %", "du plan réalisé"
     stats = [("km courus", _km(pr.km_done), False), ("séances faites", f"{pr.done}/{pr.total}", False)]
+    if multi and not pr.km_done:            # trail / triathlon : séances en durée plutôt qu'en km
+        minutes = _minutes_done(table, sv) if not table.empty else 0
+        stats = stats[1:] if not minutes else [("d'entraînement", format_minutes(minutes), False)] + stats[1:]
     if current is not None:
         week = table[table["position"] == current]
         n_week_done = sum(1 for _, r in week.iterrows() if suivi.is_done(r, sv))
@@ -294,7 +340,14 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     # ------------------------------------------------------------------ messages du coach, signalements, checklist
     extras.replies_card(s, sv, coach, table, readonly, prefix)
     extras.reports_banner(s, sv, coach, readonly, prefix)
-    extras.checklist_card(s, sv, readonly, prefix, days_left)
+    race_rows = table[[is_race_day(x) for x in table["seance"]]]
+    race_row = race_rows.iloc[0] if len(race_rows) else None
+    nxt = suivi.next_session(table, sv, today)
+    race_now = race_row is not None and (
+        bool(sv.temps_realise) or nxt is None or nxt["session_id"] == race_row["session_id"]
+        or (s.date_course is not None and today >= s.date_course))
+    # nutrition : sur la carte du jour J quand elle est affichée, sinon dans la checklist de la semaine de course
+    extras.checklist_card(s, sv, readonly, prefix, days_left, "" if race_now else nutrition)
 
     # ------------------------------------------------------------------ ressenti de la dernière séance
     pending = suivi.pending_feedback(table, sv, today)
@@ -313,17 +366,11 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
                       disabled=readonly)
 
     # ------------------------------------------------------------------ prochaine séance / jour J
-    race_rows = table[[is_race_day(x) for x in table["seance"]]]
-    race_row = race_rows.iloc[0] if len(race_rows) else None
-    nxt = suivi.next_session(table, sv, today)
-    race_now = race_row is not None and (
-        bool(sv.temps_realise) or nxt is None or nxt["session_id"] == race_row["session_id"]
-        or (s.date_course is not None and today >= s.date_course))
     if race_now:
         with st.container(key=f"{prefix}-card-race"):
             rd = race_row["date"] if isinstance(race_row["date"], date) else None
             when = f"Jour J, {fr_date(rd, True, True)}" if rd else "Jour J"
-            render(race_card_html(race_row, sp.paces, when, pr.race_time))
+            render(race_card_html(race_row, sp.paces, when, pr.race_time, nutrition=nutrition, facts=multi))
             race_form(race_row, k("race_top"))
     elif nxt is not None:
         sub = table[table["position"] == nxt["position"]]
@@ -332,10 +379,15 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         when = f"Ta prochaine séance : {rel}" if rel else \
             f"Ta prochaine séance : semaine {int(nxt['position']) + 1}, séance {idx} sur {len(sub)}"
         with st.container(key=f"{prefix}-card-next"):
-            render(next_session_html(nxt, sp.paces, when))
-            st.button("C'est fait !", type="primary", icon=":material/check:", key=k(f"done_{nxt['session_id']}"),
-                      on_click=mark_done, args=(nxt["session_id"], int(nxt["position"])), disabled=readonly,
-                      width="stretch")
+            render(next_session_html(nxt, sp.paces, when, vma=s.vma if multi else None))
+            if is_intermediate_race(nxt):          # course intermédiaire : on saisit son temps
+                with st.popover("Mon temps", type="primary", icon=":material/timer:", width="stretch",
+                                key=k(f"nxtime_{nxt['session_id']}")):
+                    time_form(nxt, k(f"nxtf_{nxt['session_id']}"))
+            else:
+                st.button("C'est fait !", type="primary", icon=":material/check:", key=k(f"done_{nxt['session_id']}"),
+                          on_click=mark_done, args=(nxt["session_id"], int(nxt["position"])), disabled=readonly,
+                          width="stretch")
             with st.container(horizontal=True, horizontal_alignment="center"):
                 with st.popover("Je ne l'ai pas faite", type="tertiary", icon=":material/block:",
                                 key=k(f"nxskip_{nxt['session_id']}")):
@@ -349,7 +401,7 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         sid = r["session_id"]
         ck = k(f"chk_{sid}")
         callback = {} if readonly else {"on_change": on_check, "args": (sid, ck, int(r["position"]))}
-        st.checkbox(f"**{_md(session_title(r))}**", value=sid in sv.done, key=ck, width="stretch", wrap=True,
+        st.checkbox(f"**{_md(planning.card_title(r))}**", value=sid in sv.done, key=ck, width="stretch", wrap=True,
                     disabled=readonly, **callback)
 
     def feel_button(r) -> None:
@@ -372,6 +424,11 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         with st.popover("Mon chrono", icon=":material/flag:", key=k(f"pop_{sid}"), wrap=False):
             race_form(r, k(f"race_{sid}"))
 
+    def time_button(r) -> None:
+        sid = r["session_id"]
+        with st.popover("Mon temps", icon=":material/timer:", key=k(f"tpop_{sid}"), wrap=False):
+            time_form(r, k(f"time_{sid}"))
+
     def checklist_button(r) -> None:
         with st.popover("Ma checklist du jour J", icon=":material/checklist:", type="tertiary",
                         key=k(f"ckpop_{r['session_id']}")):
@@ -385,28 +442,35 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
     with t_planning:
         done_ids = {sid for sid, ok in stt.status.items() if ok}
         with st.container(horizontal=True, vertical_alignment="bottom", key=f"{prefix}-plan-tools"):
-            freq_key = k(f"freq{stt.frequency}")      # clé liée à la valeur : suit un changement fait par le coach
-            st.segmented_control("Séances par semaine", FREQUENCIES, default=stt.frequency, key=freq_key,
-                                 format_func=lambda n: f"{n} séances", on_change=on_freq, args=(freq_key,),
-                                 required=True,
-                                 disabled=readonly,
-                                 help="Change le nombre de séances de toutes tes semaines. Tes allures ne changent "
-                                      "pas. Pour une seule semaine, utilise « Modifier ma semaine » en bas.")
+            if not multi:
+                freq_key = k(f"freq{stt.frequency}")      # clé liée à la valeur : suit un changement fait par le coach
+                st.segmented_control("Séances par semaine", FREQUENCIES, default=stt.frequency, key=freq_key,
+                                     format_func=lambda n: f"{n} séances", on_change=on_freq, args=(freq_key,),
+                                     required=True,
+                                     disabled=readonly,
+                                     help="Change le nombre de séances de toutes tes semaines. Tes allures ne "
+                                          "changent pas. Pour une seule semaine, utilise « Modifier ma semaine » en bas.")
             st.space("stretch")
             extras.agenda_button(s, table, sp.paces, prefix)
             extras.report_button(s, readonly, prefix)
             with st.popover("Imprimer ou exporter", icon=":material/print:", key=k("exports")):
                 ui.exports_bar(s, table, sp, stt.frequency, key=prefix, done=done_ids, race_time=pr.race_time,
-                               notes=sv.notes, vertical=True)
+                               notes=sv.notes, vertical=True, times=sv.times, nutrition=nutrition)
         planning.render_planning(s, stt, readonly, prefix,
                                  planning.Controls(check=check_box, feel=feel_button, race=race_button,
-                                                   skip=skip_button, checklist=checklist_button), coach)
+                                                   skip=skip_button, checklist=checklist_button,
+                                                   time=time_button), coach)
         extras.recap_toggle(s, sv, readonly, prefix)
 
     with t_paces:
-        render(paces_track(sp.paces, ui.basis_text(sp, s)))
-        st.caption("À droite de chaque allure : le temps qu'elle donne sur sa distance de référence. "
-                   "Les pastilles de couleur des séances renvoient à ces allures.")
+        if multi and not sp.known:
+            render("<div class='empty'>Ton plan est décrit séance par séance (durées, sensations, pourcentages de "
+                   "VMA). Quand ton coach aura renseigné ta VMA, tes allures s'afficheront ici.</div>")
+        else:
+            render(paces_track(sp.paces, ui.basis_text(sp, s)))
+            st.caption("À droite de chaque allure : le temps qu'elle donne sur sa distance de référence. " +
+                       ("Les séances « à x % de VMA » de ton plan affichent aussi leur allure." if multi else
+                        "Les pastilles de couleur des séances renvoient à ces allures."))
 
     with t_log, st.container(key=f"{prefix}-card-log"):
         render(journal_html(suivi.journal(table, sv), pr.race_time, coach.replies))

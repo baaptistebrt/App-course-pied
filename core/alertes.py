@@ -26,7 +26,7 @@ from datetime import date, timedelta
 from .agenda import session_days
 from .analyse import weekly_frame
 from .config import FEELINGS
-from .plan import activity_kind, is_race_day
+from .plan import activity_kind, is_optional, is_race_day
 from .reponses import CoachFile, signal_key
 from .suivi import is_done, is_skipped
 
@@ -135,7 +135,8 @@ def program_alerts(state, coach: CoachFile | None = None, today: date | None = N
                              le[:10], sid, sid))
 
     # -- séances pas faites d'affilée (dans l'ordre du plan)
-    marked = [sid for sid in rows if is_done(rows[sid], sv) or is_skipped(rows[sid], sv)]
+    marked = [sid for sid in rows if is_done(rows[sid], sv)
+              or (is_skipped(rows[sid], sv) and not is_optional(rows[sid]))]      # optionnelle : pas une alerte
     if len(marked) >= 2 and all(is_skipped(rows[s], sv) for s in marked[-2:]):
         last = sv.skipped[marked[-1]]
         if (_day(last.le) or date.min) >= recent:
@@ -163,7 +164,7 @@ def program_alerts(state, coach: CoachFile | None = None, today: date | None = N
     last_activity = max(activity) if activity else ""
     since = today - timedelta(days=INACTIVE_DAYS)
     days = session_days(state.student, table)              # date réelle, ou jour conseillé si non fixé
-    dated = [d for sid, d in days.items() if sid in rows]
+    dated = [d for sid, d in days.items() if sid in rows and not is_optional(rows[sid])]
     away = sv.absence_on(today) is not None
     if dated and not away:
         due = [d for d in dated if since <= d < today]

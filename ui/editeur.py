@@ -18,7 +18,8 @@ from core import historique, profils, recap, referentiel, reglages, suivi
 from core.auth import load_editor_code
 from core.calculs import (compute_paces, compute_paces_vma, format_race_time, fr_number, normalize_objective,
                           parse_objective, parse_vma)
-from core.config import DEFAULT_VMA_PCT, DISTANCE_KEYS, DISTANCES, FREQUENCIES, METHODS, VMA_DEFAULT
+from core.config import (DEFAULT_VMA_PCT, DISTANCE_KEYS, DISTANCES, FREQUENCIES, METHODS, ROUTE_KEYS, SPORT_KEYS,
+                         SPORTS, VMA_DEFAULT)
 from core.emails import load_email_config, send_access_email, send_test_email
 from core.exports import fr_date
 from core.moteur import comparison, student_paces
@@ -31,6 +32,7 @@ from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare
 
 FREQ_FMT = {n: f"{n} séances" for n in FREQUENCIES}
 DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:"}
+SPORT_ICONS = {"trail": ":material/landscape:", "triathlon": ":material/pool:"}
 
 
 def app_url() -> str:
@@ -78,25 +80,72 @@ def render_editor(on_logout) -> None:
     ui.show_notifications()
     counts = {d: len(profils.list_students(store, d)) for d in DISTANCE_KEYS}
     render(editor_track(counts))
-    labels = [f"{DIST_ICONS[d]} {DISTANCES[d].label}" for d in DISTANCE_KEYS]
+    labels = [f"{DIST_ICONS[d]} {DISTANCES[d].label}" for d in ROUTE_KEYS] + \
+        [f"{SPORT_ICONS[sp]} {name}" for sp, name in SPORTS.items()]
     tabs = st.tabs([*labels, ":material/monitoring: Supervision", ":material/map: Parcours",
                     ":material/settings: Réglages"], key="main_tabs")
-    for tab, d in zip(tabs, DISTANCE_KEYS):
+    for tab, d in zip(tabs, ROUTE_KEYS):
         with tab:
-            view = st.segmented_control("Vue", ["Élèves", "Formules", "Modèle de référence"], default="Élèves",
-                                        required=True, key=f"view_{d}", label_visibility="collapsed")
-            if view == "Formules":
-                render_global_formulas(d)
-            elif view == "Modèle de référence":
-                render_template(d)
-            else:
-                render_students(d)
-    with tabs[len(DISTANCE_KEYS)]:
+            render_distance(d)
+    for tab, sport in zip(tabs[len(ROUTE_KEYS):], SPORTS):
+        with tab:          # un sous-onglet par format (Trail : 50 km ; Triathlon : L), d'autres pourront s'ajouter
+            keys = SPORT_KEYS[sport]
+            for sub, d in zip(st.tabs([DISTANCES[k].short for k in keys], key=f"sport_tabs_{sport}"), keys):
+                with sub:
+                    render_distance(d)
+    n = len(ROUTE_KEYS) + len(SPORTS)
+    with tabs[n]:
         supervision.render_overview()
-    with tabs[len(DISTANCE_KEYS) + 1]:
+    with tabs[n + 1]:
         render_editor_routes()
-    with tabs[len(DISTANCE_KEYS) + 2]:
+    with tabs[n + 2]:
         render_settings()
+
+
+def render_distance(d: str) -> None:
+    """Contenu de l'onglet d'une distance : élèves, formules (route), modèle de référence, nutrition jour J."""
+    views = ["Élèves", "Formules", "Modèle de référence", "Nutrition jour J"] if DISTANCES[d].uses_paces else \
+        ["Élèves", "Modèle de référence", "Nutrition jour J"]
+    view = st.segmented_control("Vue", views, default="Élèves", required=True, key=f"view_{d}",
+                                label_visibility="collapsed")
+    if view == "Formules":
+        render_global_formulas(d)
+    elif view == "Modèle de référence":
+        render_template(d)
+    elif view == "Nutrition jour J":
+        render_nutrition(d)
+    else:
+        render_students(d)
+
+
+def render_nutrition(distance: str) -> None:
+    """Conseils nutrition du jour de course pour une distance (l'élève les voit la semaine de course)."""
+    store = ui.app_store()
+    dist = DISTANCES[distance]
+    st.markdown(f"#### Nutrition le jour de la course · {dist.label}")
+    st.caption("Tes élèves de cette distance voient ces conseils sur leur carte du jour J et pendant la semaine de "
+               "course. Pour un élève en particulier, tu peux écrire un texte perso dans sa fiche (onglet Nutrition).")
+    ver = ui.version(f"nutri_{distance}")
+    current = reglages.load_nutrition(store).get(distance, "")
+    k = f"nutri_txt_{distance}_{ver}"
+    st.text_area("Conseils", value=current, key=k, height=260, label_visibility="collapsed",
+                 placeholder="La veille…, le matin…, pendant la course…, après…")
+
+    def save() -> None:
+        reglages.save_nutrition(store, distance, st.session_state.get(k, ""))
+        ui.saved("Conseils nutrition enregistrés")
+        ui.bump(f"nutri_{distance}")
+
+    def reset() -> None:
+        reglages.save_nutrition(store, distance, reglages.DEFAULT_NUTRITION.get(distance, ""))
+        ui.saved("Conseils proposés rétablis")
+        ui.bump(f"nutri_{distance}")
+
+    with st.container(horizontal=True):
+        st.button("Enregistrer", type="primary", icon=":material/save:", key=f"nutri_save_{distance}_{ver}",
+                  on_click=save)
+        st.button("Revenir au texte proposé", key=f"nutri_reset_{distance}_{ver}", on_click=reset,
+                  disabled=current == reglages.DEFAULT_NUTRITION.get(distance, ""))
 
 
 # =========================================================================== élèves
@@ -148,24 +197,34 @@ def new_student_form(distance: str) -> None:
         c0a.text_input("Prénom (facultatif)", key=f"new_prenom_{distance}")
         c0b.text_input("Nom de la course (facultatif)", key=f"new_course_{distance}",
                        placeholder=f"ex. {dist.label} de Lyon 2027")
-        st.radio("Calcul des allures", list(METHODS), index=list(METHODS).index(dist.default_method),
-                 format_func=METHODS.get, horizontal=True, key=f"new_methode_{distance}",
-                 help="Tu peux renseigner les deux pour comparer, puis changer de méthode dans la fiche de l'élève")
-        c1, c2 = st.columns(2)
-        c1.text_input(f"Objectif {dist.label.lower()} (hh:mm:ss)", value=dist.default_objective,
-                      key=f"new_objectif_{distance}", help="Facultatif avec la méthode VMA")
-        c2.text_input("VMA (km/h)", key=f"new_vma_{distance}", placeholder=f"ex. {fr_number(VMA_DEFAULT)}",
-                      help="Facultatif avec la méthode objectif de temps")
-        c3, c4 = st.columns(2)
-        c3.date_input("Date de course (facultatif)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
-                      min_value=date.today())
-        c4.radio("Séances par semaine", FREQUENCIES, index=FREQUENCIES.index(3 if distance == "10k" else 4), horizontal=True,
-                 format_func=FREQ_FMT.get, key=f"new_freq_{distance}")
+        if dist.uses_paces:
+            st.radio("Calcul des allures", list(METHODS), index=list(METHODS).index(dist.default_method),
+                     format_func=METHODS.get, horizontal=True, key=f"new_methode_{distance}",
+                     help="Tu peux renseigner les deux pour comparer, puis changer de méthode dans la fiche de l'élève")
+            c1, c2 = st.columns(2)
+            c1.text_input(f"Objectif {dist.label.lower()} (hh:mm:ss)", value=dist.default_objective,
+                          key=f"new_objectif_{distance}", help="Facultatif avec la méthode VMA")
+            c2.text_input("VMA (km/h)", key=f"new_vma_{distance}", placeholder=f"ex. {fr_number(VMA_DEFAULT)}",
+                          help="Facultatif avec la méthode objectif de temps")
+            c3, c4 = st.columns(2)
+            c3.date_input("Date de course (facultatif)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
+                          min_value=date.today())
+            c4.radio("Séances par semaine", FREQUENCIES, index=FREQUENCIES.index(3 if distance == "10k" else 4),
+                     horizontal=True, format_func=FREQ_FMT.get, key=f"new_freq_{distance}")
+        else:
+            c1, c2, c3 = st.columns(3)
+            c1.date_input("Date de course (conseillé)", value=None, format="DD/MM/YYYY", key=f"new_date_{distance}",
+                          min_value=date.today(), help="Les semaines sont datées à rebours depuis le jour J")
+            c2.text_input("Objectif de temps (facultatif)", key=f"new_objectif_{distance}",
+                          placeholder="ex. 6:30:00", help="Affiché sur le dossard de l'élève")
+            c3.text_input("VMA (facultatif)", key=f"new_vma_{distance}", placeholder=f"ex. {fr_number(VMA_DEFAULT)}",
+                          help="Sert à afficher l'allure des séances « à x % de VMA »")
         st.checkbox("Envoyer le code d'accès par e-mail à l'élève", value=email_ready, disabled=not email_ready,
                     key=f"new_send_{distance}",
                     help=None if email_ready else "Configure l'envoi d'e-mails dans l'onglet Réglages")
-        st.caption(f"Le plan part du modèle de référence {dist.label.lower()} et des formules globales actuelles. "
-                   "Un code d'accès personnel est créé automatiquement ; un élève déjà inscrit garde le sien et "
+        st.caption(f"Le plan part du modèle de référence {dist.label.lower()}"
+                   + (" et des formules globales actuelles" if dist.uses_paces else "") +
+                   ". Un code d'accès personnel est créé automatiquement ; un élève déjà inscrit garde le sien et "
                    "retrouve tous ses programmes dans son espace.")
         st.form_submit_button("Créer le programme", type="primary", on_click=_create_student, args=(distance,))
 
@@ -173,7 +232,8 @@ def new_student_form(distance: str) -> None:
 def render_students(distance: str) -> None:
     store = ui.app_store()
     students = profils.list_students(store, distance)
-    label = DISTANCES[distance].label.lower()
+    full = DISTANCES[distance].label
+    label = full[0].lower() + full[1:]          # « marathon », « triathlon L (Half Iron Man) »
     if not students:
         st.html(f"<div class='empty'>Aucun élève en {label} pour l'instant. Ajoute ton premier élève avec son "
                 "e-mail : son code d'accès est créé automatiquement.</div>")
@@ -201,7 +261,8 @@ def render_students(distance: str) -> None:
     with st.expander(f"Tous les programmes {label} ({len(students)})"):
         st.dataframe(pd.DataFrame([{
             "Élève": s.display_name, "Nom de la course": s.course, "Statut": "Terminée" if done[s.id] else "En cours",
-            "E-mail": s.email, "Code": s.code, "Méthode": METHODS[s.methode],
+            "E-mail": s.email, "Code": s.code,
+            "Méthode": METHODS[s.methode] if DISTANCES[s.distance].uses_paces else "—",
             "Objectif": format_race_time(parse_objective(s.objectif, s.distance)) if s.objectif else "",
             "VMA": fr_number(s.vma) if s.vma is not None else "",
             "Date de course": s.date_course.strftime("%d/%m/%Y") if s.date_course else "",
@@ -224,6 +285,7 @@ def student_panel(s: Student) -> None:
     key = f"stu_{s.id}"
     ver = ui.version(key)
     sp = student_paces(s)
+    multi = not DISTANCES[s.distance].uses_paces          # trail / triathlon
 
     def on_objective(k: str) -> None:
         raw = (st.session_state.get(k) or "").strip()
@@ -232,7 +294,9 @@ def student_panel(s: Student) -> None:
         except ValueError as exc:
             ui.notify(str(exc), "error")
         else:
-            if not value and s.methode == "temps":
+            if not value and s.methode == "temps" and multi:
+                _save_student(s.id, "Objectif effacé", objectif="")
+            elif not value and s.methode == "temps":
                 ui.notify("Cet élève est calculé sur son objectif : choisis d'abord la méthode VMA pour l'effacer.",
                           "error")
             elif not value and s.vma is None:
@@ -248,7 +312,10 @@ def student_panel(s: Student) -> None:
         except ValueError as exc:
             ui.notify(str(exc), "error")
         else:
-            if value is None and s.methode == "vma":
+            if multi:                         # trail / triathlon : VMA facultative
+                _save_student(s.id, "VMA enregistrée" if value is not None else "VMA effacée", vma=value,
+                              methode="vma" if value is not None else "temps")
+            elif value is None and s.methode == "vma":
                 ui.notify("Cet élève est calculé sur sa VMA : choisis d'abord la méthode objectif pour l'effacer.",
                           "error")
             else:
@@ -348,24 +415,40 @@ def student_panel(s: Student) -> None:
                       type="primary", disabled=not ok, on_click=delete, key=f"del_{s.id}_{ver}", width="stretch",
                       help="Ses autres programmes sont gardés" if others else None)
 
-        c_name, c_date, c_freq = st.columns([1.3, 1, 1.4], vertical_alignment="bottom")
+        if multi:      # trail / triathlon : pas de 2/3/4 séances ; objectif et VMA facultatifs sur la même ligne
+            c_name, c_date, c_obj, c_vma = st.columns([1.3, 1, 0.9, 0.9], vertical_alignment="bottom")
+        else:
+            c_name, c_date, c_freq = st.columns([1.3, 1, 1.4], vertical_alignment="bottom")
         k_name = f"course_{s.id}_{ver}"
         c_name.text_input("Nom de la course (facultatif)", value=s.course, key=k_name, on_change=on_course,
                           args=(k_name,), placeholder=f"ex. {DISTANCES[s.distance].label} de Lyon 2027")
         k_date = f"date_{s.id}_{ver}"
         c_date.date_input("Date de course (facultatif)", value=s.date_course, format="DD/MM/YYYY", key=k_date,
                           on_change=on_date, args=(k_date,))
-        k_freq = f"freq_{s.id}_{ver}"
-        c_freq.segmented_control("Séances par semaine (défaut)", FREQUENCIES, default=s.frequence_defaut,
-                                 format_func=FREQ_FMT.get, key=k_freq, on_change=on_freq, args=(k_freq,),
-                                 required=True,
-                                 help="L'élève peut ensuite choisir 2, 3 ou 4 séances dans son espace")
-        chosen = suivi.load_suivi(store, s.id).frequence or s.frequence_eleve
-        if chosen and chosen != s.frequence_defaut:
-            c_freq.caption(f"L'élève a choisi **{chosen} séances** dans son espace : c'est ce qu'il voit "
-                           "(détail dans l'onglet Suivi).")
+        if multi:
+            k_obj = f"obj_{s.id}_{ver}"
+            c_obj.text_input("Objectif de temps (facultatif)", value=s.objectif, key=k_obj, on_change=on_objective,
+                             args=(k_obj,), placeholder="hh:mm:ss", help="Affiché sur le dossard de l'élève")
+            k_vma = f"vma_{s.id}_{ver}"
+            c_vma.text_input("VMA (facultatif)", value=fr_number(s.vma) if s.vma is not None else "", key=k_vma,
+                             on_change=on_vma, args=(k_vma,), placeholder=f"ex. {fr_number(VMA_DEFAULT)}",
+                             help="Sert à afficher l'allure des séances « à x % de VMA » et l'onglet « Mes allures »")
+        else:
+            k_freq = f"freq_{s.id}_{ver}"
+            c_freq.segmented_control("Séances par semaine (défaut)", FREQUENCIES, default=s.frequence_defaut,
+                                     format_func=FREQ_FMT.get, key=k_freq, on_change=on_freq, args=(k_freq,),
+                                     required=True,
+                                     help="L'élève peut ensuite choisir 2, 3 ou 4 séances dans son espace")
+            chosen = suivi.load_suivi(store, s.id).frequence or s.frequence_eleve
+            if chosen and chosen != s.frequence_defaut:
+                c_freq.caption(f"L'élève a choisi **{chosen} séances** dans son espace : c'est ce qu'il voit "
+                               "(détail dans l'onglet Suivi).")
         with st.container(horizontal=True, vertical_alignment="center"):
             info_weeks(s)
+
+    if multi:
+        _multisport_tabs(s, sp, store)
+        return
 
     # ---- moteur double : objectif / VMA, comparaison, méthode retenue
     with st.container(border=True, key=f"card-method-{s.id}"):
@@ -397,8 +480,10 @@ def student_panel(s: Student) -> None:
             ("" if s.objectif else f" — temps de course estimé : {format_race_time(sp.race_seconds)}")
     render(paces_track(sp.paces, basis))
 
-    t_plan, t_form, t_suivi, t_preview = st.tabs(["Plan de l'élève", "Formules de l'élève", "Suivi",
-                                                  "Vue élève"], key=f"stabs_{s.id}")
+    t_plan, t_form, t_suivi, t_nutri, t_preview = st.tabs(["Plan de l'élève", "Formules de l'élève", "Suivi",
+                                                           "Nutrition", "Vue élève"], key=f"stabs_{s.id}")
+    with t_nutri:
+        student_nutrition(s)
     with t_plan:
         ui.plan_editor(
             s.plan, sp.paces, sp.race_seconds, s.date_course, key=f"plan_{s.id}",
@@ -427,6 +512,51 @@ def student_panel(s: Student) -> None:
         supervision.render_student_suivi(s)
     with t_preview:
         eleve.render_space(s, readonly=True, prefix=f"pv{s.id}")
+
+
+def _multisport_tabs(s: Student, sp, store) -> None:
+    """Fiche trail / triathlon : allures (si VMA), plan, suivi, nutrition, vue élève."""
+    if sp.known:
+        render(paces_track(sp.paces, "Allures sur la VMA (pour les séances « à x % de VMA »)"))
+    sport = DISTANCES[s.distance].sport
+    t_plan, t_suivi, t_nutri, t_preview = st.tabs(["Plan de l'élève", "Suivi", "Nutrition", "Vue élève"],
+                                                  key=f"stabs_{s.id}")
+    with t_plan:
+        ui.plan_editor(
+            s.plan, sp.paces, sp.race_seconds, s.date_course, key=f"plan_{s.id}",
+            load=lambda: profils.get_student(store, s.id).plan,
+            save=lambda plan, msg: _save_student(s.id, msg, plan=plan), sport=sport)
+    with t_suivi:
+        supervision.render_student_suivi(s)
+    with t_nutri:
+        student_nutrition(s)
+    with t_preview:
+        eleve.render_space(s, readonly=True, prefix=f"pv{s.id}")
+
+
+def student_nutrition(s: Student) -> None:
+    """Conseils nutrition jour J d'un élève : ceux de sa distance, ou un texte perso."""
+    store = ui.app_store()
+    key = f"nutri_stu_{s.id}"
+    ver = ui.version(key)
+    general = reglages.load_nutrition(store).get(s.distance, "")
+    dist = DISTANCES[s.distance]
+    where = dist.label if dist.uses_paces else f"{SPORTS[dist.sport]} > {dist.short}"
+    st.caption(f"Par défaut, {s.display_name} voit les conseils de la distance (onglet {where} > "
+               "Nutrition jour J). Écris ici un texte perso pour lui seul ; vide = conseils de la distance.")
+    k = f"{key}_{ver}"
+    st.text_area("Conseils nutrition perso", value=s.nutrition, key=k, height=200,
+                 placeholder=general or "La veille…, le matin…, pendant la course…")
+
+    def save() -> None:
+        _save_student(s.id, "Nutrition perso enregistrée" if (st.session_state.get(k) or "").strip()
+                      else "Nutrition perso effacée : conseils de la distance", nutrition=(st.session_state.get(k)
+                                                                                           or "").strip())
+        ui.bump(key)
+
+    st.button("Enregistrer", type="primary", icon=":material/save:", key=f"{key}_save_{ver}", on_click=save)
+    with st.expander("Conseils de la distance"):
+        st.markdown(general.replace("\n", "  \n") or "_Aucun conseil pour cette distance._")
 
 
 def info_weeks(s: Student) -> None:
@@ -508,14 +638,17 @@ def render_template(distance: str) -> None:
     st.markdown(f"#### Modèle de référence {dist.label.lower()}")
     st.caption("Point de départ du plan de chaque nouvel élève. Le modifier ne change pas les plans existants.")
     c_obj, c_reset = st.columns([1, 3], vertical_alignment="bottom")
-    sample = c_obj.text_input("Objectif d'exemple", value=dist.default_objective, key=f"tsample_{distance}")
-    try:
-        seconds = parse_objective(sample, distance)
-    except ValueError as exc:
-        st.error(str(exc))
-        return
+    if dist.uses_paces:
+        sample = c_obj.text_input("Objectif d'exemple", value=dist.default_objective, key=f"tsample_{distance}")
+        try:
+            seconds = parse_objective(sample, distance)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
+    else:
+        seconds = 0
     with c_reset.popover("Réinitialiser le modèle", icon=":material/restart_alt:"):
-        st.write("Remplace ce modèle par la version d'origine (celle des fichiers Excel de référence).")
+        st.write("Remplace ce modèle par la version d'origine (celle des plans de référence fournis).")
         ok = st.checkbox("Je confirme", key=f"tr_ok_{distance}")
         if st.button("Réinitialiser", type="primary", disabled=not ok, key=f"tr_btn_{distance}"):
             referentiel.reset_template(store, distance)
@@ -524,9 +657,11 @@ def render_template(distance: str) -> None:
             time.sleep(0.2)
             st.rerun()
     ratios = referentiel.load_global_ratios(store)[distance]
-    ui.plan_editor(referentiel.load_template(store, distance), compute_paces(seconds, distance, ratios), seconds,
+    paces = compute_paces(seconds, distance, ratios) if dist.uses_paces else compute_paces_vma(VMA_DEFAULT, distance)
+    ui.plan_editor(referentiel.load_template(store, distance), paces, seconds,
                    None, key=f"tpl_{distance}", load=lambda: referentiel.load_template(store, distance),
-                   save=lambda plan, msg: (referentiel.save_template(store, distance, plan), ui.saved(msg)))
+                   save=lambda plan, msg: (referentiel.save_template(store, distance, plan), ui.saved(msg)),
+                   sport=dist.sport)
 
 
 # =========================================================================== réglages

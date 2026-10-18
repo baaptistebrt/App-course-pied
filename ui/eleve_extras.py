@@ -44,6 +44,9 @@ EXTRAS_CSS = """
 [class*="st-key-"][class*="card-check"] { background: #fff; border-radius: 14px; padding: 14px 18px;
     border-left: 8px solid var(--chrono); }
 .ck-h { font-weight: 700; color: var(--track); margin: 6px 0 0; }
+details.nut-d { margin-top: 12px; background: #F3FAF6; border-radius: 10px; padding: 10px 14px; border-left: 4px solid #2F9E6E; }
+details.nut-d summary { cursor: pointer; font-weight: 700; color: var(--night); }
+details.nut-d > div { white-space: pre-line; color: var(--night); font-size: .95rem; line-height: 1.5; margin-top: 6px; }
 """
 
 _ICONS = {"douleur": "🩹", "absence": "🏖️", "maladie": "🤒"}
@@ -209,8 +212,10 @@ def checklist(student, sv: suivi.Suivi, readonly: bool, prefix: str, columns: in
                             on_change=toggle, args=(item.key, wk))
 
 
-def checklist_card(student, sv: suivi.Suivi, readonly: bool, prefix: str, days_left: int | None) -> None:
-    """Carte « Ta checklist du jour J » la dernière semaine avant la course."""
+def checklist_card(student, sv: suivi.Suivi, readonly: bool, prefix: str, days_left: int | None,
+                   nutrition: str = "") -> None:
+    """Carte « Ta checklist du jour J » la dernière semaine avant la course, avec les conseils nutrition du
+    coach (dépliables)."""
     if days_left is None or not 0 <= days_left <= 7 or sv.temps_realise:
         return
     with st.container(key=f"{prefix}-card-check"):
@@ -218,6 +223,9 @@ def checklist_card(student, sv: suivi.Suivi, readonly: bool, prefix: str, days_l
         render(f"<div class='ask'>✅ Ta checklist du jour J<small>Ta course, c'est {when} : prépare-toi "
                "sereinement.</small></div>")
         checklist(student, sv, readonly, prefix + "c")
+        if str(nutrition or "").strip():
+            render(f"<details class='nut-d'><summary>🍝 Nutrition du jour J</summary><div>{e(nutrition.strip())}"
+                   "</div></details>")
 
 
 # ----------------------------------------------------------------------------
@@ -231,7 +239,8 @@ def records_html(prs: list) -> str:
         when = f" · {fr_date(p.race_date, True)}" if p.race_date else ""
         up = f"<div class='m-up'>{e(p.improvement)}</div>" if p.improvement else ""
         cards.append(f"<div class='medal'><div class='m-h'><span>🥇</span>Record {e(p.label)}</div>"
-                     f"<div class='m-t'>{e(p.time_str)}</div><div class='m-s'>{e(p.pace_str)} · {e(p.course)}{e(when)}"
+                     f"<div class='m-t'>{e(p.time_str)}</div><div class='m-s'>{e(p.pace_str + ' · ' if p.pace_str else '')}"
+                     f"{e(p.course)}{e(when)}"
                      f"</div>{up}</div>")
     return f"<div class='medals'>{''.join(cards)}</div>"
 

@@ -15,8 +15,9 @@ import streamlit.components.v1 as components
 
 from core import referentiel
 from core.calculs import Pace, compute_paces, compute_paces_vma, format_minutes, format_pct_range, ratio_formula
-from core.config import (DAY_LABELS, DAYS, FREQ_ALWAYS, FREQ_LABELS, PACE_BY_CODE, PACE_CODES, PACE_LABELS,
-                         RATIO_CODES, SESSION_INPUT_COLUMNS, ZONE_COLORS)
+from core.config import (DAY_LABELS, DAYS, DISTANCES, FREQ_ALWAYS, FREQ_LABELS, PACE_BY_CODE, PACE_CODES,
+                         PACE_LABELS, RATIO_CODES, SESSION_INPUT_COLUMNS, SKELETONS, STATUS_LABELS, TRAIL_TAGS, TRI_DISCIPLINES,
+                         ZONE_COLORS)
 from core.exports import export_csv, export_excel, fr_date, print_button_html, print_document, print_page
 from core.plan import Plan, computed_columns, pace_codes, sessions_equal
 from core.stockage import Store, get_store
@@ -68,6 +69,12 @@ def bump(key: str) -> None:
 COMPUTED = ["allure_txt", "temps_auto"]
 EDITOR_ORDER = ["seance", "jour", "km_env", "duree_env", "contenu", "allure", "intensite", "km_spe", "temps_spe",
                 "frequence", *COMPUTED, "remarque"]
+# Colonnes affichées selon le sport (les autres restent enregistrées telles quelles).
+EDITOR_ORDERS: dict[str, list[str]] = {
+    "route": EDITOR_ORDER,
+    "trail": ["seance", "jour", "tag", "contenu", "statut", "duree_env", "km_env", "note", "remarque"],
+    "triathlon": ["seance", "jour", "tag", "duree_env", "contenu", "km_env", "remarque"],
+}
 
 
 def column_config() -> dict:
@@ -100,24 +107,58 @@ def column_config() -> dict:
     }
 
 
+def sport_column_config(sport: str) -> dict:
+    """Colonnes de l'éditeur pour le trail et le triathlon (en plus des colonnes communes)."""
+    cc = st.column_config
+    conf = column_config()
+    conf["seance"] = cc.TextColumn("Séance", width=72, help="s1, s2… ; « JOUR J » pour la course")
+    conf["remarque"] = cc.TextColumn("Remarque", width=160)
+    conf["km_env"] = cc.TextColumn("Km", width=56, help="Facultatif (ex. distance du jour J)")
+    if sport == "triathlon":
+        conf["tag"] = cc.SelectboxColumn("Discipline", width=170, options=list(TRI_DISCIPLINES),
+                                         format_func=lambda k: TRI_DISCIPLINES.get(k, k),
+                                         help="« Enchaînement » : deux disciplines à la suite (ex. vélo puis course à "
+                                              "pied). « Course intermédiaire » : course de préparation, l'élève y note "
+                                              "son temps")
+        conf["duree_env"] = cc.TextColumn("Durée", width=70, help="ex. 0h45, 2h00")
+        conf["contenu"] = cc.TextColumn("Description", width=420,
+                                        help="Texte libre ; une ligne par étape (« • … ») s'affiche en liste")
+    else:
+        conf["tag"] = cc.TextColumn("Type", width=96, help="ex. " + ", ".join(TRAIL_TAGS))
+        conf["contenu"] = cc.TextColumn("Description", width=360, help="Texte libre, affiché tel quel à l'élève")
+        conf["statut"] = cc.SelectboxColumn("Statut", width=118, options=list(STATUS_LABELS),
+                                            format_func=lambda k: STATUS_LABELS.get(k, k), default="obligatoire",
+                                            help="« Optionnel » : séance en plus, qui ne compte que si l'élève la fait")
+        conf["duree_env"] = cc.TextColumn("Durée", width=66, help="Facultatif (ex. 1h30) : sert au volume horaire")
+        conf["note"] = cc.TextColumn("Note technique", width=200,
+                                     help="Facultatif : explication affichée à l'élève avec la séance "
+                                          "(ex. le parcours en « triangle »)")
+    return conf
+
+
 def editor_frame(sessions: pd.DataFrame, paces: dict[str, Pace], seconds: int) -> pd.DataFrame:
     comp = computed_columns(sessions, paces, seconds)
     view = sessions.copy()
     view["allure_txt"] = comp["allure_txt"]
     view["temps_auto"] = [format_minutes(m) for m in comp["temps_spe_min"]]
     for col in ("session_id", "seance", "jour", "km_env", "duree_env", "contenu", "temps_spe", "remarque",
-                "intensite", "allure_txt", "temps_auto", "frequence"):
+                "intensite", "allure_txt", "temps_auto", "frequence", "tag", "statut", "note"):
         view[col] = view[col].astype(object)
     view["jour"] = [d or None for d in view["jour"]]
+    view["statut"] = [v or None for v in view["statut"]]
     view["allure"] = pd.Series([pace_codes(v) for v in view["allure"]], dtype=object)
     view["km_spe"] = view["km_spe"].astype("float64")
-    return view[["session_id", *EDITOR_ORDER]]
+    return view[["session_id", *dict.fromkeys([*EDITOR_ORDER, "tag", "statut", "note"])]]
 
 
 def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: date | None, key: str,
-                load: Callable[[], Plan], save: Callable[[Plan, str], None]) -> None:
-    """Édition complète d'un plan. `load` relit le plan enregistré, `save(plan, message)` l'enregistre."""
+                load: Callable[[], Plan], save: Callable[[Plan, str], None], sport: str = "route") -> None:
+    """Édition complète d'un plan. `load` relit le plan enregistré, `save(plan, message)` l'enregistre.
+    `sport` : « route », « trail » ou « triathlon » (colonnes affichées et semaine type ajoutée)."""
     ver = version(key)
+    skeleton = SKELETONS.get(sport, SKELETONS["route"])
+    order = EDITOR_ORDERS.get(sport, EDITOR_ORDER)
+    conf = column_config() if sport == "route" else sport_column_config(sport)
 
     def apply(op: Callable[[Plan], Plan], message: str) -> None:
         try:
@@ -135,14 +176,24 @@ def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: dat
                      f"Les **{-diff} premières semaines** et leurs séances seront supprimées.")
             st.caption("La fin du plan (affûtage et semaine de course) ne bouge pas.")
             st.button("Confirmer", type="primary", key=f"rs_{key}_{ver}",
-                      on_click=apply, args=(lambda p: p.resize(target), f"Plan ajusté à {target} semaines"))
+                      on_click=apply, args=(lambda p: p.resize(target, skeleton), f"Plan ajusté à {target} semaines"))
         with c_add, st.container(horizontal=True):
             st.button("Semaine au début", icon=":material/add:", key=f"af_{key}_{ver}",
-                      on_click=apply, args=(lambda p: p.insert_week(0), "Semaine ajoutée au début"))
+                      on_click=apply, args=(lambda p: p.insert_week(0, skeleton), "Semaine ajoutée au début"))
             st.button("Semaine à la fin", icon=":material/add:", key=f"al_{key}_{ver}",
-                      on_click=apply, args=(lambda p: p.insert_week(p.n_weeks), "Semaine ajoutée à la fin"))
+                      on_click=apply, args=(lambda p: p.insert_week(p.n_weeks, skeleton), "Semaine ajoutée à la fin"))
         st.caption("Double-clique sur une case pour la modifier ; « + » sous un tableau ajoute une séance, "
                    "la case à cocher d'une ligne puis la corbeille la supprime. Tout est enregistré automatiquement.")
+        intro_key = f"intro_{key}_{ver}"
+        with st.expander("Note d'introduction" + (" ✓" if plan.intro else " (vide)"), icon=":material/edit_note:",
+                         expanded=bool(plan.intro) and sport != "route"):
+            st.text_area("Note d'introduction", value=plan.intro, key=intro_key, height=180,
+                         label_visibility="collapsed",
+                         placeholder="Texte de cadrage affiché en haut du plan de l'élève : durée, phases, "
+                                     "nombre de séances, consignes de récupération…")
+            st.button("Enregistrer la note", icon=":material/save:", key=f"intro_save_{key}_{ver}", on_click=apply,
+                      args=(lambda p, k=intro_key: p.with_intro(st.session_state.get(k, "")),
+                            "Note d'introduction enregistrée"))
 
     for _, week in plan.weeks.sort_values("position").iterrows():
         wid, pos = week["week_id"], int(week["position"])
@@ -159,7 +210,7 @@ def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: dat
             with c_a.popover("Actions", icon=":material/more_horiz:", width="stretch"):
                 st.button("Insérer une semaine avant", icon=":material/add:", key=f"ins_{key}_{wid}_{ver}",
                           width="stretch", on_click=apply,
-                          args=(lambda p, i=pos: p.insert_week(i), "Semaine insérée"))
+                          args=(lambda p, i=pos: p.insert_week(i, skeleton), "Semaine insérée"))
                 st.button("Dupliquer (copie avant)", icon=":material/content_copy:", key=f"dup_{key}_{wid}_{ver}",
                           width="stretch", on_click=apply,
                           args=(lambda p, w=wid: p.duplicate_week(w), "Semaine dupliquée"))
@@ -169,8 +220,8 @@ def plan_editor(plan: Plan, paces: dict[str, Pace], seconds: int, race_date: dat
                           args=(lambda p, w=wid: p.delete_week(w), "Semaine supprimée"))
             view = editor_frame(plan.sessions_of(wid), paces, seconds)
             edited = st.data_editor(view, key=f"ed_{key}_{wid}_{ver}_{seconds}", num_rows="dynamic",
-                                    hide_index=True, width="stretch", column_config=column_config(),
-                                    column_order=EDITOR_ORDER, disabled=COMPUTED, placeholder="")
+                                    hide_index=True, width="stretch", column_config=conf,
+                                    column_order=order, disabled=COMPUTED, placeholder="")
             if not sessions_equal(edited[SESSION_INPUT_COLUMNS], view[SESSION_INPUT_COLUMNS]):
                 save(load().replace_week_sessions(wid, edited[SESSION_INPUT_COLUMNS]),
                      f"{Plan.week_label(pos)} enregistrée")
@@ -225,18 +276,21 @@ def vma_pct_editor(pct: dict, distance: str, vma: float, key: str, on_save: Call
 
 # =========================================================================== exports
 def exports_bar(student, table: pd.DataFrame, sp, frequency: int, key: str, done: set[str] | None = None,
-                race_time: str = "", notes: dict | None = None, vertical: bool = False) -> None:
-    """Boutons d'export Excel / CSV et d'impression du plan affiché (en colonne : vertical=True)."""
+                race_time: str = "", notes: dict | None = None, vertical: bool = False, times: dict | None = None,
+                nutrition: str = "") -> None:
+    """Boutons d'export Excel / CSV et d'impression du plan affiché (en colonne : vertical=True).
+    `times` : chrono des courses intermédiaires (triathlon) ; `nutrition` : conseils du jour J (impression)."""
     stem = re.sub(r"[^\w-]+", "_", f"plan_{student.race_name}_{student.display_name}").strip("_")
-    doc = print_document(student, table, sp, frequency, done, race_time, notes)
+    sport = DISTANCES[student.distance].sport
+    doc = print_document(student, table, sp, frequency, done, race_time, notes, times, nutrition)
     with st.container(horizontal=not vertical, vertical_alignment="center",
                       horizontal_alignment="left" if vertical else "right", gap="small"):
         components.html(print_button_html(doc), height=44, width=220 if vertical else 185)
-        st.download_button("Excel", export_excel(student, table, sp, frequency, done, race_time, notes),
+        st.download_button("Excel", export_excel(student, table, sp, frequency, done, race_time, notes, times),
                            file_name=f"{stem}.xlsx", icon=":material/download:", key=f"xl_{key}", on_click="ignore",
                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-        st.download_button("CSV", export_csv(table, done, notes), file_name=f"{stem}.csv", mime="text/csv",
-                           icon=":material/download:", key=f"csv_{key}", on_click="ignore")
+        st.download_button("CSV", export_csv(table, done, notes, sport, times), file_name=f"{stem}.csv",
+                           mime="text/csv", icon=":material/download:", key=f"csv_{key}", on_click="ignore")
         st.download_button("Page imprimable", print_page(doc, f"Plan de {student.display_name}"),
                            file_name=f"{stem}.html", mime="text/html", icon=":material/description:",
                            key=f"html_{key}", on_click="ignore",

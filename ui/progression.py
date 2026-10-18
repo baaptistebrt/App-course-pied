@@ -14,7 +14,9 @@ import plotly.graph_objects as go
 import streamlit as st
 
 from core import analyse, historique
-from core.config import FEELINGS
+from core.calculs import format_minutes
+from core.config import DISTANCES, FEELINGS
+from core.plan import is_race_day
 from ui.design import render
 
 BLUE, ORANGE, GREEN = "#2A6FDB", "#EB6834", "#199E70"
@@ -65,18 +67,32 @@ def sessions_chart(weekly: pd.DataFrame) -> go.Figure:
     return _layout(fig, "Séances par semaine")
 
 
-def volume_chart(weekly: pd.DataFrame) -> go.Figure:
-    """Volume hebdomadaire : km prévus (fond gris) et km courus (barre bleue)."""
+def in_hours(state) -> bool:
+    """Trail / triathlon donné en durées, sans kilomètres hors jour J : le volume se compte en heures."""
+    if DISTANCES[state.student.distance].uses_paces or state.table.empty:
+        return False
+    table = state.table
+    training = table[[not is_race_day(x) for x in table["seance"]]]
+    km = sum(1 for v in training["km_env"] if str(v or "").strip())
+    minutes = sum(1 for v in training["duree_env"] if str(v or "").strip())
+    return km == 0 and minutes > 0
+
+
+def volume_chart(weekly: pd.DataFrame, hours: bool = False) -> go.Figure:
+    """Volume hebdomadaire : km prévus (fond gris) et km courus (barre bleue) ; en heures (`hours`) pour un
+    plan donné en durées (triathlon)."""
+    planned, done = ("h_prevues", "h_faites") if hours else ("km_prevus", "km_courus")
+    unit = " h" if hours else " km"
     fig = go.Figure()
-    fig.add_bar(x=weekly["semaine"], y=weekly["km_prevus"], name="Prévus", marker={"color": UPCOMING},
-                width=0.6, customdata=weekly["periode"],
-                hovertemplate="%{customdata}<br>Prévus : %{y} km<extra></extra>")
-    fig.add_bar(x=weekly["semaine"], y=weekly["km_courus"], name="Courus", marker={"color": BLUE},
+    fig.add_bar(x=weekly["semaine"], y=weekly[planned], name="Prévues" if hours else "Prévus",
+                marker={"color": UPCOMING}, width=0.6, customdata=weekly["periode"],
+                hovertemplate=f"%{{customdata}}<br>Prévu : %{{y}}{unit}<extra></extra>")
+    fig.add_bar(x=weekly["semaine"], y=weekly[done], name="Faites" if hours else "Courus", marker={"color": BLUE},
                 width=0.3, customdata=weekly["periode"],
-                hovertemplate="%{customdata}<br>Courus : %{y} km<extra></extra>")
+                hovertemplate=f"%{{customdata}}<br>{'Fait' if hours else 'Couru'} : %{{y}}{unit}<extra></extra>")
     fig.update_layout(barmode="overlay", barcornerradius=4)
-    fig.update_yaxes(title=None, ticksuffix=" km", rangemode="tozero")
-    return _layout(fig, "Volume hebdomadaire")
+    fig.update_yaxes(title=None, ticksuffix=unit, rangemode="tozero")
+    return _layout(fig, "Volume hebdomadaire" + (" (heures)" if hours else ""))
 
 
 def feelings_chart(feelings: pd.DataFrame) -> go.Figure:
@@ -152,25 +168,32 @@ def render_program(state, key: str) -> None:
         return
     adh = analyse.adherence(weekly)
     avg = feelings["ressenti"].mean() if not feelings.empty else None
+    hours = in_hours(state)
+    volume = (("Entraînement", format_minutes(float(weekly['h_faites'].sum()) * 60) or "0 h")
+              if hours else ("Km courus", f"{weekly['km_courus'].sum():.0f}".replace(".", ",")))
     _tiles([("Séances faites", f"{int(weekly['faites'].sum())} / {int(weekly['prevues'].sum())}"),
             ("Assiduité", f"{round(adh * 100)} %" if adh is not None else "—"),
-            ("Km courus", f"{weekly['km_courus'].sum():.0f}".replace(".", ",")),
+            volume,
             ("Ressenti moyen", FEELINGS[round(avg)][0] + f" {avg:.1f}".replace(".", ",") if avg else "—")])
     st.caption("Assiduité : séances faites parmi celles déjà prévues à ce jour (celles tombées pendant une absence "
-               "signalée ne comptent pas). Km courus : ceux saisis par l'élève, sinon les km prévus.")
+               "signalée ne comptent pas). " +
+               ("Heures : durée prévue des séances faites." if hours else
+                "Km courus : ceux saisis par l'élève, sinon les km prévus."))
     c1, c2 = st.columns(2, gap="medium")
     with c1, st.container(key=f"card-chart-s-{key}"):
         _show(sessions_chart(weekly), f"ch_s_{key}")
     with c2, st.container(key=f"card-chart-v-{key}"):
-        _show(volume_chart(weekly), f"ch_v_{key}")
+        _show(volume_chart(weekly, hours), f"ch_v_{key}")
     if not feelings.empty:
         with st.container(key=f"card-chart-f-{key}"):
             _show(feelings_chart(feelings), f"ch_f_{key}")
     with st.expander("Voir les données de la progression"):
+        vol_cols = ["Heures prévues", "Heures faites"] if hours else ["Km prévus", "Km courus"]
         st.dataframe(weekly.rename(columns={
             "semaine": "Semaine", "periode": "Période", "faites": "Faites", "manquees": "Manquées",
-            "excusees": "Absence", "a_venir": "À venir", "km_prevus": "Km prévus", "km_courus": "Km courus"})[
-            ["Semaine", "Période", "Faites", "Manquées", "Absence", "À venir", "Km prévus", "Km courus"]],
+            "excusees": "Absence", "a_venir": "À venir", "km_prevus": "Km prévus", "km_courus": "Km courus",
+            "h_prevues": "Heures prévues", "h_faites": "Heures faites"})[
+            ["Semaine", "Période", "Faites", "Manquées", "Absence", "À venir", *vol_cols]],
             hide_index=True, width="stretch")
         if not feelings.empty:
             st.dataframe(feelings.rename(columns={"date": "Date", "libelle": "Ressenti", "seance": "Séance",
@@ -192,9 +215,12 @@ def render_races(records: list, key: str) -> None:
         else:
             st.caption("Pas d'objectif de temps pour ces courses : l'écart ne peut pas être calculé.")
     with c2, st.container(key=f"card-chart-p-{key}"):
-        _show(pace_chart(races), f"ch_p_{key}")
+        if races["allure_s"].notna().any():
+            _show(pace_chart(races.dropna(subset=["allure_s"])), f"ch_p_{key}")
+        else:
+            st.caption("Trail et triathlon : pas d'allure moyenne (le temps compte, pas l'allure au km).")
     with st.expander("Voir les données des courses"):
-        st.dataframe(races.assign(allure=[_mmss(v) + " /km" for v in races["allure_s"]]).rename(columns={
+        st.dataframe(races.assign(allure=[_mmss(v) + " /km" if pd.notna(v) else "" for v in races["allure_s"]]).rename(columns={
             "course": "Course", "distance": "Distance", "date": "Date", "temps": "Temps", "objectif": "Objectif",
             "ecart": "Écart", "allure": "Allure"})[["Course", "Distance", "Date", "Objectif", "Temps", "Écart",
                                                     "Allure"]], hide_index=True, width="stretch")
