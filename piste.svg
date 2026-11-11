@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1000" preserveAspectRatio="xMidYMid slice">
+  <defs>
+    <linearGradient id="nuit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0A1D38"/><stop offset="1" stop-color="#143A66"/>
+    </linearGradient>
+    <linearGradient id="piste" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A62A6"/><stop offset="1" stop-color="#1B4F8C"/>
+    </linearGradient>
+    <radialGradient id="projecteur" cx="0.15" cy="0.05" r="0.9">
+      <stop offset="0" stop-color="#FFFFFF" stop-opacity="0.22"/><stop offset="0.6" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="grain" width="6" height="6" patternUnits="userSpaceOnUse">
+      <circle cx="1" cy="1" r="0.8" fill="#FFFFFF" opacity="0.05"/><circle cx="4" cy="4" r="0.6" fill="#000" opacity="0.08"/>
+    </pattern>
+  </defs>
+  <rect width="1600" height="1000" fill="url(#nuit)"/>
+  <g transform="translate(1230 1230)">
+    <!-- virage : 6 couloirs entre les rayons 760 et 1420 -->
+    <circle r="1090" fill="none" stroke="url(#piste)" stroke-width="660"/>
+    <circle r="1090" fill="none" stroke="url(#grain)" stroke-width="660"/>
+    <g fill="none" stroke="#FFFFFF" stroke-opacity="0.9" stroke-width="5">
+      <circle r="760"/><circle r="870"/><circle r="980"/><circle r="1090"/><circle r="1200"/><circle r="1310"/><circle r="1420"/>
+    </g>
+    <!-- départs décalés -->
+    <g stroke="#FFFFFF" stroke-width="9" stroke-linecap="square">
+      <line x1="760" y1="0" x2="870" y2="0" transform="rotate(-160)"/>
+      <line x1="870" y1="0" x2="980" y2="0" transform="rotate(-156)"/>
+      <line x1="980" y1="0" x2="1090" y2="0" transform="rotate(-152.5)"/>
+      <line x1="1090" y1="0" x2="1200" y2="0" transform="rotate(-149.5)"/>
+      <line x1="1200" y1="0" x2="1310" y2="0" transform="rotate(-147)"/>
+      <line x1="1310" y1="0" x2="1420" y2="0" transform="rotate(-144.8)"/>
+    </g>
+    <!-- ligne d'arrivée et numéros de couloir -->
+    <line x1="760" y1="0" x2="1420" y2="0" stroke="#FFFFFF" stroke-width="18" transform="rotate(-112)"/>
+    <g fill="#FFFFFF" font-family="Barlow Condensed, Arial Narrow, Arial, sans-serif" font-weight="800"
+       font-size="74" text-anchor="middle" opacity="0.92">
+      <text transform="rotate(-106) translate(815 0) rotate(90)" dy="26">1</text>
+      <text transform="rotate(-106.5) translate(925 0) rotate(90)" dy="26">2</text>
+      <text transform="rotate(-107) translate(1035 0) rotate(90)" dy="26">3</text>
+      <text transform="rotate(-107.3) translate(1145 0) rotate(90)" dy="26">4</text>
+      <text transform="rotate(-107.6) translate(1255 0) rotate(90)" dy="26">5</text>
+      <text transform="rotate(-107.8) translate(1365 0) rotate(90)" dy="26">6</text>
+    </g>
+  </g>
+  <rect width="1600" height="1000" fill="url(#projecteur)"/>
+</svg>

@@ -1,0 +1,38 @@
+# Récap du dimanche soir (à mettre dans le dépôt des DONNÉES : .github/workflows/recap.yml)
+# Chaque dimanche à 18 h UTC (20 h en été, 19 h en hiver à Paris), GitHub récupère le code de
+# l'application, lit les données de ce dépôt et envoie les e-mails.
+# Secrets à créer dans ce dépôt (Settings > Secrets and variables > Actions) :
+#   EMAIL_USER, EMAIL_PASSWORD, APP_URL  (les mêmes valeurs que la section [email] des Secrets Streamlit)
+name: Récap du dimanche
+
+on:
+  schedule:
+    - cron: "0 18 * * 0"
+  workflow_dispatch:        # bouton « Run workflow » pour l'essayer tout de suite
+
+jobs:
+  recap:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Données (ce dépôt)
+        uses: actions/checkout@v4
+        with:
+          path: donnees
+      - name: Code de l'application
+        uses: actions/checkout@v4
+        with:
+          repository: baaptistebrt/App-course-pied
+          path: code
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Installation
+        run: pip install pandas openpyxl
+      - name: Envoi des e-mails
+        env:
+          PLAN_EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          PLAN_EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+          PLAN_EMAIL_APP_URL: ${{ secrets.APP_URL }}
+          PLAN_EMAIL_SENDER_NAME: ${{ secrets.SENDER_NAME }}
+        run: python code/tools/recap_hebdo.py --data donnees/data
