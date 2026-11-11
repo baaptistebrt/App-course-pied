@@ -21,7 +21,7 @@ from .stockage import Store, read_workbook, write_workbook
 RATIOS_FILE = "formules.xlsx"
 # Version des modèles par défaut. Un modèle enregistré avec une version plus ancienne est remplacé
 # au démarrage (l'ancien est gardé en « modeles/<distance>_v<n>.xlsx »). 10 km v3 = fichier Excel de Maud.
-TEMPLATE_VERSIONS: dict[str, int] = {"marathon": 2, "semi": 2, "10k": 3, "trail50": 1, "triL": 1}
+TEMPLATE_VERSIONS: dict[str, int] = {"marathon": 2, "semi": 2, "10k": 3, "10k_bis": 1, "trail50": 1, "triL": 1}
 
 
 def template_file(distance: str) -> str:

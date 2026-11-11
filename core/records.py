@@ -59,7 +59,7 @@ def personal_records(records: list) -> list[PersonalRecord]:
         before = [r.race_seconds for r in timed if (r.race_date or date.min) < (best.race_date or date.min)]
         out.append(PersonalRecord(dist, best.race_seconds, best.course, best.race_date,
                                   min(before) if before else None, len(timed)))
-    order = ["10k", "semi", "marathon"]
+    order = ["10k", "10k_bis", "semi", "marathon"]
     return sorted(out, key=lambda p: order.index(p.distance) if p.distance in order else 9)
 
 

@@ -73,8 +73,8 @@ def save_settings(store: Store, settings: Settings) -> None:
 # Checklist du jour J
 # ----------------------------------------------------------------------------
 MOMENTS = ["La veille", "Le matin", "Échauffement", "Manger et boire", "Pendant la course"]
-FOR_OPTIONS = {"toutes": "Toutes les distances", "10k": "10 km", "semi": "Semi-marathon", "marathon": "Marathon",
-               "trail50": "Trail 50 km", "triL": "Triathlon L"}
+FOR_OPTIONS = {"toutes": "Toutes les distances", "10k": "10 km", "10k_bis": "10 km bis", "semi": "Semi-marathon",
+               "marathon": "Marathon", "trail50": "Trail 50 km", "triL": "Triathlon L"}
 
 DEFAULT_CHECKLIST = [
     ("toutes", "La veille", "Prépare ta tenue, tes chaussures, ton dossard et tes épingles"),
@@ -142,7 +142,8 @@ def save_checklist(store: Store, items: list[ChecklistItem]) -> None:
 
 def checklist_for(items: list[ChecklistItem], distance: str) -> list[tuple[str, list[ChecklistItem]]]:
     """Conseils d'une distance, groupés par moment (dans l'ordre des moments)."""
-    mine = [i for i in items if i.pour in ("toutes", distance)]
+    match = {"toutes", distance, *({"10k"} if distance == "10k_bis" else set())}
+    mine = [i for i in items if i.pour in match]
     order = MOMENTS + sorted({i.moment for i in mine} - set(MOMENTS))
     return [(m, [i for i in mine if i.moment == m]) for m in order if any(i.moment == m for i in mine)]
 
@@ -169,6 +170,11 @@ DEFAULT_NUTRITION: dict[str, str] = {
         "Après : bois et mange un fruit ou une barre.\n"
         "Rien de nouveau le jour J."),
     "10k": (
+        "La veille : un repas habituel, pas besoin de faire le plein de féculents.\n"
+        "Le matin : petit-déjeuner léger 2 à 3 h avant le départ.\n"
+        "Pendant la course : pas de ravitaillement nécessaire ; une gorgée d'eau s'il fait chaud.\n"
+        "Après : bois et mange un fruit ou une barre."),
+    "10k_bis": (
         "La veille : un repas habituel, pas besoin de faire le plein de féculents.\n"
         "Le matin : petit-déjeuner léger 2 à 3 h avant le départ.\n"
         "Pendant la course : pas de ravitaillement nécessaire ; une gorgée d'eau s'il fait chaud.\n"

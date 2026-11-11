@@ -228,7 +228,7 @@ def session_heading(r) -> tuple[str, str]:
 
 
 
-_VMA_PCT = re.compile(r"(\d{2,3})\s*%\s*(?:de\s+(?:la\s+|ta\s+)?)?VMA", re.IGNORECASE)
+_VMA_PCT = re.compile(r"(\d{2,3})\s*%\s*(?:de\s+(?:la\s+|ta\s+)?)?VMA|VMA\s*(\d{2,3})\s*%", re.IGNORECASE)
 
 
 def vma_hints(text: str, vma: float | None) -> list[str]:
@@ -238,7 +238,7 @@ def vma_hints(text: str, vma: float | None) -> list[str]:
         return []
     out: list[str] = []
     for m in _VMA_PCT.finditer(text or ""):
-        pct = int(m.group(1))
+        pct = int(m.group(1) or m.group(2))
         if 50 <= pct <= 130:
             hint = f"{pct} % VMA = {format_pace(60 / (vma * pct / 100))} /km"
             if hint not in out:

@@ -45,6 +45,7 @@ DISTANCES: dict[str, Distance] = {
     "marathon": Distance("marathon", "Marathon", 42.2, "A1", "03:30:00", 1 * 3600 + 50 * 60, 8 * 3600, "temps"),
     "semi": Distance("semi", "Semi-marathon", 21.1, "A2", "01:45:00", 50 * 60, 4 * 3600, "temps"),
     "10k": Distance("10k", "10 km", 10.0, "A3", "00:50:00", 25 * 60, 2 * 3600, "vma"),
+    "10k_bis": Distance("10k_bis", "10 km bis", 10.0, "A3", "00:50:00", 25 * 60, 2 * 3600, "vma"),
     # Trail et triathlon : plans décrits en texte (pas d'allures calculées) ; objectif et VMA facultatifs
     # (la VMA sert seulement à afficher l'allure des séances « à x % de VMA »).
     "trail50": Distance("trail50", "Trail 50 km", 50.0, "A1", "", 3 * 3600, 30 * 3600, "vma", "trail", "50 km"),

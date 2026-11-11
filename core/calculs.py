@@ -48,7 +48,7 @@ def parse_objective(text: str, distance: Distance | str = "marathon") -> int:
         a, b, c = int(m.group(1)), int(m.group(2)), m.group(3)
         if c is not None:
             h, mnt, s = a, b, int(c)
-        elif dist.key == "10k" and a >= 20:      # « 45:30 » sur 10 km = 45 min 30 s
+        elif dist.km <= 10 and a >= 20:          # « 45:30 » sur 10 km = 45 min 30 s
             h, mnt, s = 0, a, b
         else:                                     # « 3:29 » = 3 h 29
             h, mnt, s = a, b, 0
