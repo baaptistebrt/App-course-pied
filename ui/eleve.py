@@ -379,7 +379,7 @@ def render_space(s, readonly: bool = False, prefix: str = "me") -> None:
         when = f"Ta prochaine séance : {rel}" if rel else \
             f"Ta prochaine séance : semaine {int(nxt['position']) + 1}, séance {idx} sur {len(sub)}"
         with st.container(key=f"{prefix}-card-next"):
-            render(next_session_html(nxt, sp.paces, when, vma=s.vma if multi else None))
+            render(next_session_html(nxt, sp.paces, when, vma=s.vma))
             if is_intermediate_race(nxt):          # course intermédiaire : on saisit son temps
                 with st.popover("Mon temps", type="primary", icon=":material/timer:", width="stretch",
                                 key=k(f"nxtime_{nxt['session_id']}")):

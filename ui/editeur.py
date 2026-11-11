@@ -31,7 +31,8 @@ from ui.parcours import render_editor_routes
 from ui.design import MEDIA_FILES, editor_track, media_uri, paces_track, prepare_photo, render
 
 FREQ_FMT = {n: f"{n} séances" for n in FREQUENCIES}
-DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:"}
+DIST_ICONS = {"marathon": ":material/directions_run:", "semi": ":material/sprint:", "10k": ":material/timer:",
+              "10k_bis": ":material/timer:"}
 SPORT_ICONS = {"trail": ":material/landscape:", "triathlon": ":material/pool:"}
 
 

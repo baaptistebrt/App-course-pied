@@ -364,7 +364,7 @@ def _session_card(r, day: date | None, today: date, state, prefix: str, controls
     skipped = suivi.is_skipped(r, sv)
     away = day is not None and not done and sv.absence_on(day) is not None
     inter = is_intermediate_race(r) and controls.time is not None
-    vma = state.student.vma if not DISTANCES[state.student.distance].uses_paces else None
+    vma = state.student.vma
     key = f"{prefix}-plc-{sid}"
     with st.container(key=key):
         with st.container(horizontal=True, vertical_alignment="center", gap="small", wrap=False):
@@ -617,7 +617,7 @@ def coach_card_html(r, day: date | None, today: date, state, coach=None) -> str:
         card_cls += " inter"
     elif not done and is_optional(r) and cls != "miss":
         card_cls += " opt"
-    vma = state.student.vma if not DISTANCES[state.student.distance].uses_paces else None
+    vma = state.student.vma
     details = session_details(r, state.sp.paces, vma=vma).replace("pl-body", "pl-body flat")
     filled = race or kind == "course_inter" or day == today
     return (f"<div class='pl-card {card_cls}'>{icon_html(kind, color, filled=filled, ink=ink)}"
